@@ -1,0 +1,33 @@
+# Keil / MDK build outputs
+U575/MDK-ARM/U575/
+*.o
+*.d
+*.dep
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.lnp
+*.build_log.htm
+
+# Keil user/session files
+*.uvguix.*
+*.uvgui.*
+*.uvoptx
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.stackdump
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/.browse.c_cpp.db*
