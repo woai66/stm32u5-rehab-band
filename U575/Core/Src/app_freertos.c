@@ -600,11 +600,31 @@ void StartDisplayTask(void *argument)
     osMutexRelease(uart2MutexHandle);
   }
 
-  LCD_Touch_TestTask();
+  LCD_FillScreen(LCD_COLOR_BLACK);
+  /* 行首色块标识：红=Roll 绿=Pitch 蓝=Yaw */
+  LCD_Fill(6U, 20U, 24U, 66U, LCD_COLOR_RED);
+  LCD_Fill(6U, 110U, 24U, 156U, LCD_COLOR_GREEN);
+  LCD_Fill(6U, 200U, 24U, 246U, LCD_COLOR_BLUE);
 
   for(;;)
   {
-    osDelay(1000);
+    IMUProc_Euler_t euler;
+    IMUProc_EulerX10_t euler_x10;
+    uint8_t valid;
+
+    taskENTER_CRITICAL();
+    euler = wrist_imu_euler;
+    valid = wrist_imu_valid;
+    taskEXIT_CRITICAL();
+
+    if (valid != 0U)
+    {
+      IMUProc_EulerToX10(&euler, IMU_ANGLE_DEADBAND_X10, &euler_x10);
+      (void)LCD_DrawNumberX10(34U, 20U, 30U, 46U, 6U, euler_x10.roll_x10, LCD_COLOR_RED, LCD_COLOR_BLACK);
+      (void)LCD_DrawNumberX10(34U, 110U, 30U, 46U, 6U, euler_x10.pitch_x10, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+      (void)LCD_DrawNumberX10(34U, 200U, 30U, 46U, 6U, euler_x10.yaw_x10, LCD_COLOR_BLUE, LCD_COLOR_BLACK);
+    }
+    osDelay(50);
   }
   /* USER CODE END DisplayTask */
 }
