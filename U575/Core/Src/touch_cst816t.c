@@ -9,6 +9,10 @@
 #define CST816T_REG_FW_VERSION 0xA9U
 #define CST816T_REG_DIS_SLEEP  0xFEU
 #define CST816T_TIMEOUT_MS     50U
+#define CST816T_RECOVER_FAILS  5U
+
+/* 连续读失败计数，达到阈值触发总线+芯片恢复 */
+static uint8_t s_read_fail_count = 0U;
 /**
  * @brief 向CST816T触摸屏控制器写入寄存器数据
  * 
@@ -75,6 +79,18 @@ HAL_StatusTypeDef CST816T_Init(void)
     return HAL_OK;
 }
 /**
+ * @brief 触摸总线/芯片恢复
+ *
+ * 连续读失败时调用：重置 I2C 外设解开可能被拉死的总线，再硬复位 CST816 并重新禁用自动休眠。
+ */
+static void CST816T_Recover(void)
+{
+    (void)HAL_I2C_DeInit(&hi2c1);
+    MX_I2C1_Init();
+    CST816T_Reset();
+    (void)CST816T_WriteReg(CST816T_REG_DIS_SLEEP, 0x01U);
+}
+/**
  * @brief 读取当前触摸点信息
  * 
  * 从CST816T读取手势ID、触摸点数量及第一个触摸点的坐标信息。
@@ -96,13 +112,24 @@ HAL_StatusTypeDef CST816T_ReadPoint(CST816T_TouchPoint_t *point)
     memset(point, 0, sizeof(*point));
     status = CST816T_ReadReg(CST816T_REG_GESTURE_ID, data, sizeof(data));
     if (status != HAL_OK) {
+        s_read_fail_count++;
+        if (s_read_fail_count >= CST816T_RECOVER_FAILS) {
+            CST816T_Recover();
+            s_read_fail_count = 0U;
+        }
         return status;
     }
+    s_read_fail_count = 0U;
 
     point->gesture = data[0];
     point->points = data[1] & 0x0FU;
     point->x = (uint16_t)(((uint16_t)(data[2] & 0x0FU) << 8) | data[3]);
     point->y = (uint16_t)(((uint16_t)(data[4] & 0x0FU) << 8) | data[5]);
+
+    /* 触摸 Y 轴与 LCD 显示方向相反，翻转对齐显示坐标系 */
+    if (point->y < LCD_HEIGHT) {
+        point->y = (uint16_t)(LCD_HEIGHT - 1U - point->y);
+    }
 
     if ((point->points > 0U) && (point->x < LCD_WIDTH) && (point->y < LCD_HEIGHT)) {
         point->detected = 1U;

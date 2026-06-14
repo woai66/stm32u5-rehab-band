@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 常用命令
 
-本仓库已是 git 仓库，远程为 `github.com/HZCU-Debug/stm32u5-rehab-band`，主分支 `master`。未发现 Makefile、CMake、PlatformIO、包管理脚本或自动化测试工程。主要构建入口是 Keil MDK 工程：
+本仓库已是 git 仓库，远程为 `github.com/woai66/stm32u5-rehab-band`（原 `HZCU-Debug` 已迁移至此），主分支 `master`。未发现 Makefile、CMake、PlatformIO、包管理脚本或自动化测试工程。主要构建入口是 Keil MDK 工程：
 
 ```bash
 # 使用 Keil UV4 命令行批量编译，需本机已安装 Keil MDK 并把 UV4.exe 加入 PATH
@@ -38,6 +38,16 @@ UV4.exe -b U575/MDK-ARM/U575.uvprojx -t U575 -j0
 - 工程配置已开启 HEX 输出。
 
 下载方式：板子支持 SWD（ST-Link，PA13/PA14，需 Connect Under Reset）与 ISP（板载 USB 转串口，进 Bootloader 时 `J6` 跳线帽必须跳到 `USB` 侧）。目前没有单元测试；验证依赖 Keil 编译、下载到硬件后观察 LCD/触摸、UART4 串口、IMU 和任务运行状态。执行烧录、串口监视或外设交互前先向用户确认。
+
+## 协作与 Git 流程
+
+本项目多人协作（owner + co-developer）。Git 约定：
+
+- 不直接向 `master` 提交或推送；每个特性从最新 `master` 切新分支（`feat/xxx`、`fix/xxx`）。
+- 分支完成后 push 并发起 PR，经队友 review 再合并到 `master`。
+- 合并后本地 `git checkout master && git pull` 同步，再开下一个分支。
+- 提交信息用简化 Conventional Commits（`feat`/`fix`/`docs`/`refactor`/`test`/`chore`），一个提交只做一件事。
+- 未经用户明确要求，不执行 push、force-push、rebase、amend。
 
 ## 固件结构
 
@@ -121,7 +131,7 @@ CubeMX 配置源是 `U575/wrist.ioc`。涉及引脚、时钟、外设、FreeRTOS
 
 - 烧录链路（SWD + ISP，ISP 时 J6 跳 USB）。
 - LCD ST7789V 点亮（彩条/边框/触摸点测试，高度已修为 280）。
-- 触摸 CST816T 读 ID/坐标。
+- 触摸 CST816T 调通（读 ID/坐标，坐标方向已修正，读失败连续 5 次自动复位 I2C+芯片恢复）。
 - UART4 调试串口 + printf 重定向。
 - IMU LSM6DSR 采集 + 零偏校准 + 姿态解算（单 IMU）。
 - 无线 USART1 发腕部四元数帧（仅发送端；接收端/上臂节点未建）。
