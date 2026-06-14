@@ -10,7 +10,7 @@
       <TargetName>U575</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
-      <pCCUsed>6220000::V6.22::ARMCLANG</pCCUsed>
+      <pCCUsed>6240000::V6.24::ARMCLANG</pCCUsed>
       <uAC6>1</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32U575xx</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32U5xx_HAL_Driver/Inc;../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32U5xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include/;../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure/;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/;../Middlewares/Third_Party/CMSIS/RTOS2/Include/</IncludePath>
+              <IncludePath>../Core/Inc;../Core/Utils;../Drivers/STM32U5xx_HAL_Driver/Inc;../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32U5xx/Include;../Drivers/CMSIS/Include;../Middlewares/Third_Party/FreeRTOS/Source/include/;../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure/;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/;../Middlewares/Third_Party/CMSIS/RTOS2/Include/</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -394,6 +394,36 @@
         <Group>
           <GroupName>Application/User/Core</GroupName>
           <Files>
+            <File>
+              <FileName>lcd_st7789.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/lcd_st7789.c</FilePath>
+            </File>
+            <File>
+              <FileName>touch_cst816t.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/touch_cst816t.c</FilePath>
+            </File>
+            <File>
+              <FileName>lcd_touch_test.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/lcd_touch_test.c</FilePath>
+            </File>
+            <File>
+              <FileName>lsm6dsr.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/lsm6dsr.c</FilePath>
+            </File>
+            <File>
+              <FileName>imu_processing.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/imu_processing.c</FilePath>
+            </File>
+            <File>
+              <FileName>emg_sensor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/emg_sensor.c</FilePath>
+            </File>
             <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
@@ -608,6 +638,11 @@
               <FilePath>../Core/Src/stm32u5xx_hal_msp.c</FilePath>
             </File>
             <File>
+              <FileName>wireless_link.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/wireless_link.c</FilePath>
+            </File>
+            <File>
               <FileName>stm32u5xx_hal_timebase_tim.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32u5xx_hal_timebase_tim.c</FilePath>
@@ -663,20 +698,15 @@
                 </FileArmAds>
               </FileOption>
             </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Application/User/Utils</GroupName>
+          <Files>
             <File>
-              <FileName>lcd_st7789.c</FileName>
+              <FileName>rehab_utils.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../Core/Src/lcd_st7789.c</FilePath>
-            </File>
-            <File>
-              <FileName>touch_cst816t.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../Core/Src/touch_cst816t.c</FilePath>
-            </File>
-            <File>
-              <FileName>lcd_touch_test.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../Core/Src/lcd_touch_test.c</FilePath>
+              <FilePath>../Core/Utils/rehab_utils.c</FilePath>
             </File>
           </Files>
         </Group>

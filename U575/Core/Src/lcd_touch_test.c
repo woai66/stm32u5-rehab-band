@@ -1,7 +1,13 @@
 #include "lcd_touch_test.h"
 #include "lcd_st7789.h"
 #include "touch_cst816t.h"
-
+/**
+ * @brief  在指定坐标绘制一个十字准星及外围矩形框
+ * @param  x: 中心点X坐标
+ * @param  y: 中心点Y坐标
+ * @param  color: 绘制颜色
+ * @retval None
+ */
 static void LCD_DrawCross(uint16_t x, uint16_t y, uint16_t color)
 {
     if (x >= 6U) {
@@ -12,7 +18,11 @@ static void LCD_DrawCross(uint16_t x, uint16_t y, uint16_t color)
     }
     LCD_DrawRect((x > 8U) ? (x - 8U) : 0U, (y > 8U) ? (y - 8U) : 0U, 17U, 17U, color);
 }
-
+/**
+ * @brief  执行LCD颜色条测试，显示多种标准颜色并绘制边框
+ * @param  None
+ * @retval None
+ */
 void LCD_ColorBarTest(void)
 {
     const uint16_t colors[] = {
@@ -36,7 +46,11 @@ void LCD_ColorBarTest(void)
     LCD_DrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT, LCD_COLOR_WHITE);
     LCD_DrawRect(8, 8, LCD_WIDTH - 16U, LCD_HEIGHT - 16U, LCD_COLOR_BLACK);
 }
-
+/**
+ * @brief  读取触摸点并在LCD上实时显示触摸位置
+ * @param  None
+ * @retval None
+ */
 void LCD_TouchPointTest(void)
 {
     CST816T_TouchPoint_t point;
@@ -58,11 +72,13 @@ void LCD_TouchPointTest(void)
         has_last = 1U;
     }
 }
-
+/**
+ * @brief  LCD与触摸屏综合测试任务入口
+ * @param  None
+ * @retval None
+ */
 void LCD_Touch_TestTask(void)
 {
-    LCD_Init();
-    (void)CST816T_Init();
     LCD_ColorBarTest();
 
     for (;;) {

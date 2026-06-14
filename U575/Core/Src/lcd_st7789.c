@@ -3,10 +3,13 @@
 #include <string.h>
 
 #define LCD_SPI_TIMEOUT_MS 100U
-#define LCD_TX_BUF_SIZE    1024U
+#define LCD_TX_BUF_SIZE    4096U
 
 static uint8_t lcd_tx_buf[LCD_TX_BUF_SIZE];
-
+static HAL_StatusTypeDef lcd_last_status = HAL_OK;
+/**
+ * @brief  选中LCD屏幕（拉低CS引脚）
+ */
 static void LCD_Select(void)
 {
     HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_RESET);
@@ -34,12 +37,21 @@ static void LCD_Reset(void)
     HAL_GPIO_WritePin(LCD_RST_GPIO_Port, LCD_RST_Pin, GPIO_PIN_SET);
     HAL_Delay(120);
 }
-
+/**
+ * @brief  通过SPI发送字节数据
+ * @param  data: 指向待发送数据缓冲区的指针
+ * @param  len: 待发送数据的长度
+ * @retval HAL状态枚举值
+ */
 static HAL_StatusTypeDef LCD_WriteBytes(const uint8_t *data, uint16_t len)
 {
-    return HAL_SPI_Transmit(&hspi3, (uint8_t *)data, len, LCD_SPI_TIMEOUT_MS);
+    lcd_last_status = HAL_SPI_Transmit(&hspi3, (uint8_t *)data, len, LCD_SPI_TIMEOUT_MS);
+    return lcd_last_status;
 }
-
+/**
+ * @brief  向LCD发送单字节命令
+ * @param  cmd: 命令字节
+ */
 static void LCD_WriteCommand(uint8_t cmd)
 {
     LCD_Select();
@@ -48,6 +60,10 @@ static void LCD_WriteCommand(uint8_t cmd)
     LCD_Unselect();
 }
 
+/**
+ * @brief  向LCD发送单字节数据
+ * @param  data: 数据字节
+ */
 static void LCD_WriteData8(uint8_t data)
 {
     LCD_Select();
@@ -55,7 +71,11 @@ static void LCD_WriteData8(uint8_t data)
     (void)LCD_WriteBytes(&data, 1);
     LCD_Unselect();
 }
-
+/**
+ * @brief  向LCD发送多字节数据
+ * @param  data: 指向数据缓冲区的指针
+ * @param  len: 数据长度
+ */
 static void LCD_WriteData(const uint8_t *data, uint16_t len)
 {
     LCD_Select();
@@ -64,6 +84,14 @@ static void LCD_WriteData(const uint8_t *data, uint16_t len)
     LCD_Unselect();
 }
 
+/**
+ * @brief  设置LCD显存写入地址范围
+ * @param  x0: 起始X坐标
+ * @param  y0: 起始Y坐标
+ * @param  x1: 结束X坐标
+ * @param  y1: 结束Y坐标
+ * @note   自动处理坐标越界情况，并发送列地址设置(0x2A)、行地址设置(0x2B)及内存写命令(0x2C)
+ */
 static void LCD_SetAddress(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t data[4];
@@ -97,14 +125,30 @@ static void LCD_SetAddress(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 
     LCD_WriteCommand(0x2C);
 }
-
+/**
+ * @brief  控制LCD背光开关
+ * @param  on: 非0值开启背光，0值关闭背光
+ */
 void LCD_SetBacklight(uint8_t on)
 {
-    HAL_GPIO_WritePin(LCD_BL_GPIO_Port, LCD_BL_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LCD_BL_GPIO_Port, LCD_BL_Pin, on ? GPIO_PIN_RESET : GPIO_PIN_SET);
+}
+/**
+ * @brief  获取最近一次SPI传输的HAL状态
+ * @retval 最近一次LCD_WriteBytes记录的HAL状态枚举值
+ */
+HAL_StatusTypeDef LCD_GetLastStatus(void)
+{
+    return lcd_last_status;
 }
 
-void LCD_Init(void)
+/**
+ * @brief  初始化LCD屏幕
+ * @note   执行硬件复位，发送ST7789初始化序列配置参数，最后开启背光
+ */
+HAL_StatusTypeDef LCD_Init(void)
 {
+    lcd_last_status = HAL_OK;
     LCD_Unselect();
     LCD_CommandMode();
     LCD_SetBacklight(0);
@@ -164,10 +208,18 @@ void LCD_Init(void)
     LCD_WriteCommand(0x29);
     HAL_Delay(20);
 
-    LCD_FillScreen(LCD_COLOR_BLACK);
     LCD_SetBacklight(1);
+    return lcd_last_status;
 }
-
+/**
+ * @brief  在指定矩形区域内填充颜色
+ * @param  x0: 起始X坐标
+ * @param  y0: 起始Y坐标
+ * @param  x1: 结束X坐标
+ * @param  y1: 结束Y坐标
+ * @param  color: 填充颜色 (RGB565格式)
+ * @note   使用内部缓冲区分批发送数据以优化大量像素写入性能
+ */
 void LCD_Fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color)
 {
     uint32_t pixels;
@@ -205,12 +257,20 @@ void LCD_Fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color
     }
     LCD_Unselect();
 }
-
+/**
+ * @brief  全屏填充指定颜色
+ * @param  color: 填充颜色 (RGB565格式)
+ */
 void LCD_FillScreen(uint16_t color)
 {
     LCD_Fill(0, 0, LCD_WIDTH - 1U, LCD_HEIGHT - 1U, color);
 }
-
+/**
+ * @brief  在指定坐标绘制一个像素点
+ * @param  x: X坐标
+ * @param  y: Y坐标
+ * @param  color: 像素颜色 (RGB565格式)
+ */
 void LCD_DrawPoint(uint16_t x, uint16_t y, uint16_t color)
 {
     uint8_t data[2];
@@ -224,7 +284,15 @@ void LCD_DrawPoint(uint16_t x, uint16_t y, uint16_t color)
     LCD_SetAddress(x, y, x, y);
     LCD_WriteData(data, sizeof(data));
 }
-
+/**
+ * @brief  绘制空心矩形
+ * @param  x: 左上角X坐标
+ * @param  y: 左上角Y坐标
+ * @param  w: 矩形宽度
+ * @param  h: 矩形高度
+ * @param  color: 边框颜色 (RGB565格式)
+ * @note   通过绘制四条边线实现
+ */
 void LCD_DrawRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
 {
     if ((w == 0U) || (h == 0U)) {

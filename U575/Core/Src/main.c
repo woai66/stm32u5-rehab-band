@@ -30,6 +30,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
@@ -95,6 +96,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  HAL_GPIO_WritePin(LCD_BL_GPIO_Port, LCD_BL_Pin, GPIO_PIN_RESET);
   MX_GPDMA1_Init();
   MX_ICACHE_Init();
   MX_ADC1_Init();
@@ -103,8 +105,11 @@ int main(void)
   MX_I2C1_Init();
   MX_SPI3_Init();
   MX_USART1_UART_Init();
-  MX_USART2_UART_Init();
+  MX_UART4_Init();
   /* USER CODE BEGIN 2 */
+  printf("Main init OK, LCD_BL forced ON\r\n");
+
+//  Debug_PrintfTest(); //测试printf函数
 
   /* USER CODE END 2 */
 

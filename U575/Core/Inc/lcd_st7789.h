@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define LCD_WIDTH   240U
-#define LCD_HEIGHT  284U
+#define LCD_HEIGHT  280U
 
 #define LCD_COLOR_WHITE      0xFFFFU
 #define LCD_COLOR_BLACK      0x0000U
@@ -21,7 +21,8 @@ extern "C" {
 #define LCD_COLOR_GRAY       0x8410U
 #define LCD_COLOR_DARKGRAY   0x4208U
 
-void LCD_Init(void);
+HAL_StatusTypeDef LCD_Init(void);
+HAL_StatusTypeDef LCD_GetLastStatus(void);
 void LCD_SetBacklight(uint8_t on);
 void LCD_Fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color);
 void LCD_FillScreen(uint16_t color);

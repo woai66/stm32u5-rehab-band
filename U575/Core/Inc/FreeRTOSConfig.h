@@ -1,4 +1,4 @@
-﻿/* USER CODE BEGIN Header */
+/* USER CODE BEGIN Header */
 /*
  * FreeRTOS Kernel V11.2.0
  * Portion Copyright (C) 2017 Amazon.com, Inc. or its affiliates.  All Rights Reserved.
@@ -111,9 +111,6 @@ extern uint32_t SystemCoreClock;
 #define configTIMER_QUEUE_LENGTH                 10
 #define configTIMER_TASK_STACK_DEPTH             256
 
-/* The following flag must be enabled only when using newlib */
-#define configUSE_NEWLIB_REENTRANT          0
-
 /* CMSIS-RTOS V2 flags */
 #define configUSE_OS2_THREAD_SUSPEND_RESUME  1
 #define configUSE_OS2_THREAD_ENUMERATE       1
@@ -178,4 +175,3 @@ header file. */
 /* USER CODE END Defines */
 
 #endif /* __FREERTOS_CONFIG_H */
-
