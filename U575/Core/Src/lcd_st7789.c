@@ -4,6 +4,9 @@
 
 #define LCD_SPI_TIMEOUT_MS 100U
 #define LCD_TX_BUF_SIZE    4096U
+/* ST7789V 控制器 GRAM 为 240x320，本面板可视区为 240x280，行起始在 GRAM 中有偏移。
+   底部出现花条时调此值（常见 0 或 20），列方向满宽 240 无需偏移。 */
+#define LCD_Y_OFFSET       2U
 
 static uint8_t lcd_tx_buf[LCD_TX_BUF_SIZE];
 static HAL_StatusTypeDef lcd_last_status = HAL_OK;
@@ -116,6 +119,8 @@ static void LCD_SetAddress(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     data[3] = (uint8_t)x1;
     LCD_WriteData(data, sizeof(data));
 
+    y0 += LCD_Y_OFFSET;
+    y1 += LCD_Y_OFFSET;
     LCD_WriteCommand(0x2B);
     data[0] = (uint8_t)(y0 >> 8);
     data[1] = (uint8_t)y0;
