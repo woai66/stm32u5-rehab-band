@@ -31,3 +31,11 @@ Thumbs.db
 *.swp
 *.swo
 .vscode/.browse.c_cpp.db*
+.vscode/
+
+# Keil RTE 调试器配置（自动生成，因机器而异）
+*.dbgconf
+*.dbgconf.base*
+
+# 个人 IDE 工程文件
+*.eprj2
