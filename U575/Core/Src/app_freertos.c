@@ -619,7 +619,7 @@ void StartDisplayTask(void *argument)
 
     if (valid != 0U)
     {
-      IMUProc_EulerToX10(&euler, IMU_ANGLE_DEADBAND_X10, &euler_x10);
+      IMUProc_EulerToSignedX10(&euler, IMU_ANGLE_DEADBAND_X10, &euler_x10);
       (void)LCD_DrawNumberX10(34U, 20U, 30U, 46U, 6U, euler_x10.roll_x10, LCD_COLOR_RED, LCD_COLOR_BLACK);
       (void)LCD_DrawNumberX10(34U, 110U, 30U, 46U, 6U, euler_x10.pitch_x10, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
       (void)LCD_DrawNumberX10(34U, 200U, 30U, 46U, 6U, euler_x10.yaw_x10, LCD_COLOR_BLUE, LCD_COLOR_BLACK);
@@ -657,7 +657,7 @@ void StartDebugTask(void *argument)
 
     if (imu_valid != 0U)
     {
-      IMUProc_EulerToX10(&imu_euler, IMU_ANGLE_DEADBAND_X10, &imu_euler_x10);
+      IMUProc_EulerToSignedX10(&imu_euler, IMU_ANGLE_DEADBAND_X10, &imu_euler_x10);
 
       osMutexAcquire(uart2MutexHandle, osWaitForever);
 //      printf("WRIST_IMU acc=%d,%d,%d gyro=%d,%d,%d angle_x10=%d,%d,%d\r\n",
