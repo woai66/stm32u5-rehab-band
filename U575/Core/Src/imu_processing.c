@@ -494,6 +494,52 @@ void IMUProc_EulerToX10(const IMUProc_Euler_t *euler,
   out->yaw_x10 = IMUProc_ApplyAngleDeadbandX10(IMUProc_AngleTo360X10(euler->yaw_deg),
                                                deadband_x10);
 }
+
+int32_t IMUProc_AngleToSignedX10(float angle_deg, int32_t deadband_x10)
+{
+  int32_t angle_x10;
+
+  if (!((angle_deg >= -3600.0f) && (angle_deg <= 3600.0f)))
+  {
+    return 0;
+  }
+
+  /* 先归一化到 [0,360)，再折到 [-180,180)，保留方向符号供屏显 */
+  while (angle_deg < 0.0f)
+  {
+    angle_deg += 360.0f;
+  }
+  while (angle_deg >= 360.0f)
+  {
+    angle_deg -= 360.0f;
+  }
+  if (angle_deg >= 180.0f)
+  {
+    angle_deg -= 360.0f;
+  }
+
+  angle_x10 = (int32_t)(angle_deg * 10.0f);
+
+  if ((angle_x10 <= deadband_x10) && (angle_x10 >= -deadband_x10))
+  {
+    return 0;
+  }
+  return angle_x10;
+}
+
+void IMUProc_EulerToSignedX10(const IMUProc_Euler_t *euler,
+                              int32_t deadband_x10,
+                              IMUProc_EulerX10_t *out)
+{
+  if ((euler == NULL) || (out == NULL))
+  {
+    return;
+  }
+
+  out->roll_x10 = IMUProc_AngleToSignedX10(euler->roll_deg, deadband_x10);
+  out->pitch_x10 = IMUProc_AngleToSignedX10(euler->pitch_deg, deadband_x10);
+  out->yaw_x10 = IMUProc_AngleToSignedX10(euler->yaw_deg, deadband_x10);
+}
 /**
  * @brief 主状态更新函数。依次执行数据提取、校准、滤波和姿态解算。
  *

@@ -108,6 +108,10 @@ int32_t IMUProc_ApplyAngleDeadbandX10(int32_t angle_x10, int32_t deadband_x10);
 void IMUProc_EulerToX10(const IMUProc_Euler_t *euler,
                         int32_t deadband_x10,
                         IMUProc_EulerX10_t *out);
+int32_t IMUProc_AngleToSignedX10(float angle_deg, int32_t deadband_x10);
+void IMUProc_EulerToSignedX10(const IMUProc_Euler_t *euler,
+                              int32_t deadband_x10,
+                              IMUProc_EulerX10_t *out);
 
 IMUProc_Quaternion_t IMUProc_QuaternionConjugate(IMUProc_Quaternion_t q);
 IMUProc_Quaternion_t IMUProc_QuaternionMultiply(IMUProc_Quaternion_t a,

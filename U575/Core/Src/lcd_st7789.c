@@ -309,3 +309,108 @@ void LCD_DrawRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color
     LCD_Fill(x, y, x, y + h - 1U, color);
     LCD_Fill(x + w - 1U, y, x + w - 1U, y + h - 1U, color);
 }
+
+/* 7 段数码管段位（bit0=a 顶横, bit1=b 右上, bit2=c 右下, bit3=d 底横,
+   bit4=e 左下, bit5=f 左上, bit6=g 中横）对应数字 0-9 的亮灭表 */
+static const uint8_t lcd_seg7_table[10] = {
+    0x3FU, 0x06U, 0x5BU, 0x4FU, 0x66U, 0x6DU, 0x7DU, 0x07U, 0x7FU, 0x6FU
+};
+
+/**
+ * @brief  画一个 7 段数码管数字
+ * @param  x: 数字框左上角 X
+ * @param  y: 数字框左上角 Y
+ * @param  w: 数字框宽度
+ * @param  h: 数字框高度
+ * @param  t: 段粗
+ * @param  digit: 0-9 显示对应数字，其它值（如 0xFF）只清背景显示空白
+ * @param  color: 段颜色
+ * @param  bg: 背景色
+ */
+void LCD_DrawSeg7Digit(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t t,
+                       uint8_t digit, uint16_t color, uint16_t bg)
+{
+    uint16_t vlen;
+    uint16_t ym;
+    uint8_t seg;
+
+    if ((h < (3U * t)) || (w < (2U * t))) {
+        return;
+    }
+
+    /* digit>9 视为空白（全段熄灭）；段间隙区恒为背景，由首帧清屏保证，本函数不再整块预清，
+       逐段直接写「亮=color / 灭=bg」，避免每帧出现全黑中间态造成的刷新闪烁 */
+    seg = (digit > 9U) ? 0x00U : lcd_seg7_table[digit];
+
+    vlen = (uint16_t)((h - 3U * t) / 2U);
+    ym = (uint16_t)(y + t + vlen);
+
+    LCD_Fill(x + t, y, x + w - 1U - t, y + t - 1U, ((seg & 0x01U) != 0U) ? color : bg);          /* a */
+    LCD_Fill(x + w - t, y + t, x + w - 1U, ym - 1U, ((seg & 0x02U) != 0U) ? color : bg);         /* b */
+    LCD_Fill(x + w - t, ym + t, x + w - 1U, y + h - 1U - t, ((seg & 0x04U) != 0U) ? color : bg); /* c */
+    LCD_Fill(x + t, y + h - t, x + w - 1U - t, y + h - 1U, ((seg & 0x08U) != 0U) ? color : bg);  /* d */
+    LCD_Fill(x, ym + t, x + t - 1U, y + h - 1U - t, ((seg & 0x10U) != 0U) ? color : bg);         /* e */
+    LCD_Fill(x, y + t, x + t - 1U, ym - 1U, ((seg & 0x20U) != 0U) ? color : bg);                 /* f */
+    LCD_Fill(x + t, ym, x + w - 1U - t, ym + t - 1U, ((seg & 0x40U) != 0U) ? color : bg);        /* g */
+}
+
+/**
+ * @brief  显示一个带符号、1 位小数的定点数（输入为 ×10 整数）
+ * @param  x: 数值区左上角 X
+ * @param  y: 数值区左上角 Y
+ * @param  w: 单个数字宽度
+ * @param  h: 单个数字高度
+ * @param  t: 段粗
+ * @param  value_x10: 实际值 ×10，如 1234 表示 123.4
+ * @param  color: 颜色
+ * @param  bg: 背景色
+ * @retval 绘制结束后的右边界 X，便于继续排版
+ * @note   固定布局「符号 + 3 位整数 + 小数点 + 1 位小数」，前导 0 显示为空白；
+ *         逐位覆盖背景，避免位数变化时残影。
+ */
+uint16_t LCD_DrawNumberX10(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t t,
+                           int32_t value_x10, uint16_t color, uint16_t bg)
+{
+    uint16_t gap = t;
+    uint16_t sw = (uint16_t)(t * 2U);
+    uint16_t cx = x;
+    uint8_t neg;
+    uint32_t mag;
+    uint32_t ip;
+    uint8_t frac;
+    uint8_t hundreds;
+    uint8_t tens;
+    uint8_t ones;
+
+    neg = (value_x10 < 0) ? 1U : 0U;
+    mag = (uint32_t)(neg ? -value_x10 : value_x10);
+    ip = mag / 10U;
+    frac = (uint8_t)(mag % 10U);
+    hundreds = (uint8_t)((ip / 100U) % 10U);
+    tens = (uint8_t)((ip / 10U) % 10U);
+    ones = (uint8_t)(ip % 10U);
+
+    /* 符号位：只在横杠区写亮/灭，其余恒为背景（首帧已清屏，无需每帧整块清） */
+    LCD_Fill(cx, y + (h - t) / 2U, cx + sw - 1U, y + (h - t) / 2U + t - 1U, (neg != 0U) ? color : bg);
+    cx = (uint16_t)(cx + sw + gap);
+
+    /* 百位（<100 留空） */
+    LCD_DrawSeg7Digit(cx, y, w, h, t, (ip < 100U) ? 0xFFU : hundreds, color, bg);
+    cx = (uint16_t)(cx + w + gap);
+    /* 十位（<10 留空） */
+    LCD_DrawSeg7Digit(cx, y, w, h, t, (ip < 10U) ? 0xFFU : tens, color, bg);
+    cx = (uint16_t)(cx + w + gap);
+    /* 个位 */
+    LCD_DrawSeg7Digit(cx, y, w, h, t, ones, color, bg);
+    cx = (uint16_t)(cx + w + gap);
+
+    /* 小数点（常亮，点外区域恒为背景，无需每帧整块清） */
+    LCD_Fill(cx, y + h - t, cx + t - 1U, y + h - 1U, color);
+    cx = (uint16_t)(cx + sw + gap);
+
+    /* 小数位 */
+    LCD_DrawSeg7Digit(cx, y, w, h, t, frac, color, bg);
+    cx = (uint16_t)(cx + w + gap);
+
+    return cx;
+}
