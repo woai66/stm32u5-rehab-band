@@ -334,39 +334,24 @@ void LCD_DrawSeg7Digit(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t 
     uint16_t ym;
     uint8_t seg;
 
-    LCD_Fill(x, y, x + w - 1U, y + h - 1U, bg);
-    if (digit > 9U) {
-        return;
-    }
     if ((h < (3U * t)) || (w < (2U * t))) {
         return;
     }
 
+    /* digit>9 视为空白（全段熄灭）；段间隙区恒为背景，由首帧清屏保证，本函数不再整块预清，
+       逐段直接写「亮=color / 灭=bg」，避免每帧出现全黑中间态造成的刷新闪烁 */
+    seg = (digit > 9U) ? 0x00U : lcd_seg7_table[digit];
+
     vlen = (uint16_t)((h - 3U * t) / 2U);
     ym = (uint16_t)(y + t + vlen);
-    seg = lcd_seg7_table[digit];
 
-    if ((seg & 0x01U) != 0U) {
-        LCD_Fill(x + t, y, x + w - 1U - t, y + t - 1U, color);                 /* a */
-    }
-    if ((seg & 0x02U) != 0U) {
-        LCD_Fill(x + w - t, y + t, x + w - 1U, ym - 1U, color);                /* b */
-    }
-    if ((seg & 0x04U) != 0U) {
-        LCD_Fill(x + w - t, ym + t, x + w - 1U, y + h - 1U - t, color);        /* c */
-    }
-    if ((seg & 0x08U) != 0U) {
-        LCD_Fill(x + t, y + h - t, x + w - 1U - t, y + h - 1U, color);         /* d */
-    }
-    if ((seg & 0x10U) != 0U) {
-        LCD_Fill(x, ym + t, x + t - 1U, y + h - 1U - t, color);                /* e */
-    }
-    if ((seg & 0x20U) != 0U) {
-        LCD_Fill(x, y + t, x + t - 1U, ym - 1U, color);                        /* f */
-    }
-    if ((seg & 0x40U) != 0U) {
-        LCD_Fill(x + t, ym, x + w - 1U - t, ym + t - 1U, color);               /* g */
-    }
+    LCD_Fill(x + t, y, x + w - 1U - t, y + t - 1U, ((seg & 0x01U) != 0U) ? color : bg);          /* a */
+    LCD_Fill(x + w - t, y + t, x + w - 1U, ym - 1U, ((seg & 0x02U) != 0U) ? color : bg);         /* b */
+    LCD_Fill(x + w - t, ym + t, x + w - 1U, y + h - 1U - t, ((seg & 0x04U) != 0U) ? color : bg); /* c */
+    LCD_Fill(x + t, y + h - t, x + w - 1U - t, y + h - 1U, ((seg & 0x08U) != 0U) ? color : bg);  /* d */
+    LCD_Fill(x, ym + t, x + t - 1U, y + h - 1U - t, ((seg & 0x10U) != 0U) ? color : bg);         /* e */
+    LCD_Fill(x, y + t, x + t - 1U, ym - 1U, ((seg & 0x20U) != 0U) ? color : bg);                 /* f */
+    LCD_Fill(x + t, ym, x + w - 1U - t, ym + t - 1U, ((seg & 0x40U) != 0U) ? color : bg);        /* g */
 }
 
 /**
@@ -405,11 +390,8 @@ uint16_t LCD_DrawNumberX10(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint1
     tens = (uint8_t)((ip / 10U) % 10U);
     ones = (uint8_t)(ip % 10U);
 
-    /* 符号位 */
-    LCD_Fill(cx, y, cx + sw - 1U, y + h - 1U, bg);
-    if (neg != 0U) {
-        LCD_Fill(cx, y + (h - t) / 2U, cx + sw - 1U, y + (h - t) / 2U + t - 1U, color);
-    }
+    /* 符号位：只在横杠区写亮/灭，其余恒为背景（首帧已清屏，无需每帧整块清） */
+    LCD_Fill(cx, y + (h - t) / 2U, cx + sw - 1U, y + (h - t) / 2U + t - 1U, (neg != 0U) ? color : bg);
     cx = (uint16_t)(cx + sw + gap);
 
     /* 百位（<100 留空） */
@@ -422,8 +404,7 @@ uint16_t LCD_DrawNumberX10(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint1
     LCD_DrawSeg7Digit(cx, y, w, h, t, ones, color, bg);
     cx = (uint16_t)(cx + w + gap);
 
-    /* 小数点 */
-    LCD_Fill(cx, y, cx + sw - 1U, y + h - 1U, bg);
+    /* 小数点（常亮，点外区域恒为背景，无需每帧整块清） */
     LCD_Fill(cx, y + h - t, cx + t - 1U, y + h - 1U, color);
     cx = (uint16_t)(cx + sw + gap);
 
