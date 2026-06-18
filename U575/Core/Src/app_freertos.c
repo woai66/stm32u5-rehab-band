@@ -41,10 +41,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define IMU_ATTITUDE_KP    (0.004f)
-#define IMU_ATTITUDE_KI    (0.00005f)
+#define IMU_ATTITUDE_KP    (1.0f)
+#define IMU_ATTITUDE_KI    (0.05f)
 #define IMU_ANGLE_DEADBAND_X10  (5)
 #define IMU_GYRO_DEADBAND_RAW  (2)
+/* 置 1 时 DebugTask 经 UART4 打印实时姿态角（带符号，单位 0.1°），仅调试用 */
+#define DEBUG_ANGLE_PRINT  (0)
 
 /* USER CODE END PD */
 
@@ -606,6 +608,11 @@ void StartDisplayTask(void *argument)
   LCD_Fill(6U, 110U, 24U, 156U, LCD_COLOR_GREEN);
   LCD_Fill(6U, 200U, 24U, 246U, LCD_COLOR_BLUE);
 
+  /* 上一帧值，仅在变化时重绘对应行，避免静止时无谓刷新 */
+  int32_t last_roll = INT32_MIN;
+  int32_t last_pitch = INT32_MIN;
+  int32_t last_yaw = INT32_MIN;
+
   for(;;)
   {
     IMUProc_Euler_t euler;
@@ -620,9 +627,21 @@ void StartDisplayTask(void *argument)
     if (valid != 0U)
     {
       IMUProc_EulerToSignedX10(&euler, IMU_ANGLE_DEADBAND_X10, &euler_x10);
-      (void)LCD_DrawNumberX10(34U, 20U, 30U, 46U, 6U, euler_x10.roll_x10, LCD_COLOR_RED, LCD_COLOR_BLACK);
-      (void)LCD_DrawNumberX10(34U, 110U, 30U, 46U, 6U, euler_x10.pitch_x10, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
-      (void)LCD_DrawNumberX10(34U, 200U, 30U, 46U, 6U, euler_x10.yaw_x10, LCD_COLOR_BLUE, LCD_COLOR_BLACK);
+      if (euler_x10.roll_x10 != last_roll)
+      {
+        (void)LCD_DrawNumberX10(34U, 20U, 30U, 46U, 6U, euler_x10.roll_x10, LCD_COLOR_RED, LCD_COLOR_BLACK);
+        last_roll = euler_x10.roll_x10;
+      }
+      if (euler_x10.pitch_x10 != last_pitch)
+      {
+        (void)LCD_DrawNumberX10(34U, 110U, 30U, 46U, 6U, euler_x10.pitch_x10, LCD_COLOR_GREEN, LCD_COLOR_BLACK);
+        last_pitch = euler_x10.pitch_x10;
+      }
+      if (euler_x10.yaw_x10 != last_yaw)
+      {
+        (void)LCD_DrawNumberX10(34U, 200U, 30U, 46U, 6U, euler_x10.yaw_x10, LCD_COLOR_BLUE, LCD_COLOR_BLACK);
+        last_yaw = euler_x10.yaw_x10;
+      }
     }
     osDelay(50);
   }
@@ -639,16 +658,17 @@ void StartDisplayTask(void *argument)
 void StartDebugTask(void *argument)
 {
   /* USER CODE BEGIN DebugTask */
-  LSM6DSR_Data_t imu_data; //测试陀螺仪
-  IMUProc_Euler_t imu_euler;
-  IMUProc_EulerX10_t imu_euler_x10;
-  uint8_t imu_valid;
-
   (void)argument;
 
   /* Infinite loop */
   for(;;)
   {
+#if DEBUG_ANGLE_PRINT
+    LSM6DSR_Data_t imu_data;
+    IMUProc_Euler_t imu_euler;
+    IMUProc_EulerX10_t imu_euler_x10;
+    uint8_t imu_valid;
+
     taskENTER_CRITICAL();
     imu_data = wrist_imu_raw;
     imu_euler = wrist_imu_euler;
@@ -657,21 +677,30 @@ void StartDebugTask(void *argument)
 
     if (imu_valid != 0U)
     {
+      int32_t ax[3];
+      const char *sgn[3];
+      uint32_t mag[3];
+      uint8_t i;
+
       IMUProc_EulerToSignedX10(&imu_euler, IMU_ANGLE_DEADBAND_X10, &imu_euler_x10);
+      ax[0] = imu_euler_x10.roll_x10;
+      ax[1] = imu_euler_x10.pitch_x10;
+      ax[2] = imu_euler_x10.yaw_x10;
+      for (i = 0U; i < 3U; i++)
+      {
+          sgn[i] = (ax[i] < 0) ? "-" : "";
+          mag[i] = (ax[i] < 0) ? (uint32_t)(-ax[i]) : (uint32_t)ax[i];
+      }
+      (void)imu_data;
 
       osMutexAcquire(uart2MutexHandle, osWaitForever);
-//      printf("WRIST_IMU acc=%d,%d,%d gyro=%d,%d,%d angle_x10=%d,%d,%d\r\n",
-//             (int)imu_data.acc_x,
-//             (int)imu_data.acc_y,
-//             (int)imu_data.acc_z,
-//             (int)imu_data.gyro_x,
-//             (int)imu_data.gyro_y,
-//             (int)imu_data.gyro_z,
-//             (int)imu_euler_x10.roll_x10,
-//             (int)imu_euler_x10.pitch_x10,
-//             (int)imu_euler_x10.yaw_x10);
+      printf("ANGLE roll=%s%lu.%lu pitch=%s%lu.%lu yaw=%s%lu.%lu\r\n",
+             sgn[0], (unsigned long)(mag[0] / 10U), (unsigned long)(mag[0] % 10U),
+             sgn[1], (unsigned long)(mag[1] / 10U), (unsigned long)(mag[1] % 10U),
+             sgn[2], (unsigned long)(mag[2] / 10U), (unsigned long)(mag[2] % 10U));
       osMutexRelease(uart2MutexHandle);
     }
+#endif
     osDelay(100);
   }
   /* USER CODE END DebugTask */
