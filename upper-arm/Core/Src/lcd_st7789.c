@@ -129,7 +129,7 @@ static void LCD_SetAddress(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
  */
 void LCD_SetBacklight(uint8_t on)
 {
-    HAL_GPIO_WritePin(LCD_BL_GPIO_Port, LCD_BL_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LCD_BL_GPIO_Port, LCD_BL_Pin, on ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 /**
  * @brief  初始化LCD屏幕

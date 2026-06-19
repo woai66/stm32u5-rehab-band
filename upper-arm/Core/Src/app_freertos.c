@@ -27,6 +27,7 @@
 #include "emg_sensor.h"
 #include "emg_rf_model.h"
 #include "imu_processing.h"
+#include "wireless_link.h"
 #include "usart.h"
 #include <math.h>
 #include <stdio.h>
@@ -45,6 +46,8 @@
 #define IMU_GYRO_DEADBAND_RAW  (2)
 #define DATA_STREAM_PERIOD_MS  (20U)
 #define EMG_UART4_RECORD_MODE  (1U)
+/* 采样任务里的陀螺调试打印默认关闭：fputc 逐字节阻塞写 UART4，会拖慢 200Hz 采样周期 */
+#define SENSOR_TASK_GYRO_DEBUG (0U)
 /* 25% relative EMG amplitude is treated as full effort for the simple force estimate. */
 #define EMG_FORCE_FULL_SCALE_PERCENT_X10  (250U)
 
@@ -424,6 +427,7 @@ void StartSensorTask(void *argument)
       debug_imu_valid = 1U;
       taskEXIT_CRITICAL();
 
+#if (SENSOR_TASK_GYRO_DEBUG != 0U)
       if ((osKernelGetTickCount() - last_gyro_print_tick) >= 200U)
       {
         last_gyro_print_tick = osKernelGetTickCount();
@@ -435,6 +439,9 @@ void StartSensorTask(void *argument)
                (long)(imu_data.gyro_dps_y * 10.0f),
                (long)(imu_data.gyro_dps_z * 10.0f));
       }
+#else
+      (void)last_gyro_print_tick;
+#endif
 
 //      if ((osKernelGetTickCount() - last_gyro_print_tick) >= 100U)
 //      {
@@ -610,13 +617,23 @@ void StartEmgTask(void *argument)
 void StartWirelessTask(void *argument)
 {
   /* USER CODE BEGIN WirelessTask */
+  uint8_t rx_byte;
+  WirelessWristFrame_t frame;
+
   (void)argument;
-  printf("JDY USART1 task start, baud=9600\r\n");
+  WirelessLink_Init();
+  printf("JDY USART1 task start, baud=115200\r\n");
 
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1000);
+    /* 本任务专职接收腕端帧：逐字节阻塞读 USART1 喂给解析器，
+       解析器内部在校验通过时更新 latest_frame，供其他任务用
+       WirelessLink_GetLatest 取最新姿态。 */
+    if (HAL_UART_Receive(&huart1, &rx_byte, 1U, 100U) == HAL_OK)
+    {
+      (void)WirelessLink_PushByte(rx_byte, &frame);
+    }
   }
   /* USER CODE END WirelessTask */
 }
@@ -633,7 +650,7 @@ void StartDataStreamTask(void *argument)
   /* USER CODE BEGIN DataStreamTask */
   EmgSensor_Features_t emg_features;
   char line[128];
-  int len;
+  int len = 0;
 
   (void)argument;
 
