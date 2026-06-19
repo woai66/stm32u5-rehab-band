@@ -425,6 +425,11 @@
               <FilePath>../Core/Src/emg_sensor.c</FilePath>
             </File>
             <File>
+              <FileName>emg_rf_model.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/emg_rf_model.c</FilePath>
+            </File>
+            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/main.c</FilePath>
