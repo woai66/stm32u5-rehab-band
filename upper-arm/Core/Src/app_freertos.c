@@ -27,6 +27,7 @@
 #include "emg_sensor.h"
 #include "emg_rf_model.h"
 #include "imu_processing.h"
+#include "wireless_link.h"
 #include "usart.h"
 #include <math.h>
 #include <stdio.h>
@@ -45,6 +46,8 @@
 #define IMU_GYRO_DEADBAND_RAW  (2)
 #define DATA_STREAM_PERIOD_MS  (20U)
 #define EMG_UART4_RECORD_MODE  (1U)
+/* 采样任务里的陀螺仪日志会阻塞 200Hz 采样，默认关闭，仅排查时置 1 */
+#define SENSOR_GYRO_DEBUG_PRINT  (0U)
 /* 25% relative EMG amplitude is treated as full effort for the simple force estimate. */
 #define EMG_FORCE_FULL_SCALE_PERCENT_X10  (250U)
 
@@ -61,6 +64,9 @@
 static LSM6DSR_Data_t debug_imu_raw;
 static IMUProc_Euler_t debug_imu_euler;
 static uint8_t debug_imu_valid;
+
+/* USART1 单字节中断接收缓冲，喂给腕端无线帧解析器 */
+static uint8_t wireless_rx_byte;
 
 /* USER CODE END Variables */
 
@@ -352,7 +358,9 @@ void StartSensorTask(void *argument)
   int32_t gyro_bias_raw[3] = {0};// 闄€铻哄師濮嬮浂鍋忓潎鍊?
   int32_t gyro_bias_sum[3] = {0};// 鏍″噯绱姞鍜?
   uint32_t last_error_tick = 0U;
+#if SENSOR_GYRO_DEBUG_PRINT
   uint32_t last_gyro_print_tick = 0U;
+#endif
   uint16_t calib_count = 0U;
 
   IMUProc_StateInit(&imu_state, 0.2f);
@@ -424,6 +432,7 @@ void StartSensorTask(void *argument)
       debug_imu_valid = 1U;
       taskEXIT_CRITICAL();
 
+#if SENSOR_GYRO_DEBUG_PRINT
       if ((osKernelGetTickCount() - last_gyro_print_tick) >= 200U)
       {
         last_gyro_print_tick = osKernelGetTickCount();
@@ -435,6 +444,7 @@ void StartSensorTask(void *argument)
                (long)(imu_data.gyro_dps_y * 10.0f),
                (long)(imu_data.gyro_dps_z * 10.0f));
       }
+#endif
 
 //      if ((osKernelGetTickCount() - last_gyro_print_tick) >= 100U)
 //      {
@@ -611,12 +621,21 @@ void StartWirelessTask(void *argument)
 {
   /* USER CODE BEGIN WirelessTask */
   (void)argument;
-  printf("JDY USART1 task start, baud=9600\r\n");
+
+  WirelessLink_Init();
+  /* 开启 USART1 单字节中断接收，字节在 HAL_UART_RxCpltCallback 中喂给解析器 */
+  (void)HAL_UART_Receive_IT(&huart1, &wireless_rx_byte, 1U);
+  printf("Wrist link RX on USART1, baud=115200\r\n");
 
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1000);
+    /* 接收在中断中完成，这里定期自愈：若接收被错误中断则重新挂起接收 */
+    if (HAL_UART_GetState(&huart1) == HAL_UART_STATE_READY)
+    {
+      (void)HAL_UART_Receive_IT(&huart1, &wireless_rx_byte, 1U);
+    }
+    osDelay(100);
   }
   /* USER CODE END WirelessTask */
 }
@@ -648,15 +667,15 @@ void StartDataStreamTask(void *argument)
   {
     EmgSensor_GetFeatures(&emg_features);
 
-//    len = snprintf(line,
-//                   sizeof(line),
-//                   "%u %ld %ld %ld %ld %ld\r\n",
-//                   (unsigned int)emg_features.raw,
-//                   (long)emg_features.baseline_x10,
-//                   (long)emg_features.drop_x10,
-//                   (long)emg_features.rectified_x10,
-//                   (long)emg_features.envelope_x10,
-//                   (long)emg_features.rms_x10);
+    len = snprintf(line,
+                   sizeof(line),
+                   "%u %ld %ld %ld %ld %ld\r\n",
+                   (unsigned int)emg_features.raw,
+                   (long)emg_features.baseline_x10,
+                   (long)emg_features.drop_x10,
+                   (long)emg_features.rectified_x10,
+                   (long)emg_features.envelope_x10,
+                   (long)emg_features.rms_x10);
 
     if ((EMG_UART4_RECORD_MODE == 0U) && (len > 0))
     {
@@ -726,6 +745,16 @@ void StartDebugTask(void *argument)
 }
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+
+/* USART1 收到一个腕端字节：喂给帧解析器后立即重新挂起下一字节接收 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART1)
+  {
+    (void)WirelessLink_PushByte(wireless_rx_byte, NULL);
+    (void)HAL_UART_Receive_IT(&huart1, &wireless_rx_byte, 1U);
+  }
+}
 
 /* USER CODE END Application */
 

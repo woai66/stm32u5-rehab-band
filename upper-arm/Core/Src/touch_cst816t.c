@@ -105,6 +105,8 @@ HAL_StatusTypeDef CST816T_ReadPoint(CST816T_TouchPoint_t *point)
     point->y = (uint16_t)(((uint16_t)(data[4] & 0x0FU) << 8) | data[5]);
 
     if ((point->points > 0U) && (point->x < LCD_WIDTH) && (point->y < LCD_HEIGHT)) {
+        /* 芯片原始 Y 与 LCD 坐标系上下相反，翻转后再对齐显示 */
+        point->y = (uint16_t)(LCD_HEIGHT - 1U - point->y);
         point->detected = 1U;
     }
 

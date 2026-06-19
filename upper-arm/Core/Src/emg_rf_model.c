@@ -10,7 +10,7 @@ static const char *const kEmgLabelNames[] = {
   "arm_flex_light",
   "arm_flex_strong",
   "relax",
-  "relax",
+  "shake",
 };
 
 static const uint16_t kTreeRoot[] = {

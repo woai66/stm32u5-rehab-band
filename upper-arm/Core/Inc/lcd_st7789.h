@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define LCD_WIDTH   240U
-#define LCD_HEIGHT  284U
+#define LCD_HEIGHT  280U
 
 #define LCD_COLOR_WHITE      0xFFFFU
 #define LCD_COLOR_BLACK      0x0000U
