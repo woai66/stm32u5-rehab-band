@@ -47,6 +47,7 @@
 #define IMU_ATTITUDE_KI    (0.05f)
 #define IMU_ANGLE_DEADBAND_X10  (5)
 #define IMU_GYRO_DEADBAND_RAW  (2)
+#define WRIST_WIRELESS_PERIOD_MS  (50U)
 /* 置 1 时 DebugTask 经 UART4 打印实时姿态角（带符号，单位 0.1°），仅调试用 */
 #define DEBUG_ANGLE_PRINT  (0)
 /* 置 1 时 HeartRateTask 经 UART4 打印心率/血氧/血压，仅调试用 */
@@ -66,7 +67,6 @@
 /* Wrist node local IMU cache. This node sends these values to the upper-arm node. */
 static LSM6DSR_Data_t wrist_imu_raw;
 static IMUProc_Euler_t wrist_imu_euler;
-static IMUProc_Quaternion_t wrist_imu_quat;
 static uint8_t wrist_imu_valid;
 
 /* MKS-142 心率模块：帧解析器与对外发布的健康数据（逐字节中断接收） */
@@ -90,6 +90,66 @@ const osSemaphoreAttr_t mks142FrameSem_attributes = {
 };
 
 /* USER CODE END Variables */
+
+/* USER CODE BEGIN 0 */
+static int16_t AngleToX100(float angle_deg)
+{
+  int32_t scaled;
+
+  scaled = (int32_t)((angle_deg * 100.0f) + ((angle_deg >= 0.0f) ? 0.5f : -0.5f));
+  if (scaled > INT16_MAX)
+  {
+    scaled = INT16_MAX;
+  }
+  else if (scaled < INT16_MIN)
+  {
+    scaled = INT16_MIN;
+  }
+
+  return (int16_t)scaled;
+}
+
+static int16_t FloatToI16Scaled(float value, float scale)
+{
+  int32_t scaled;
+
+  scaled = (int32_t)((value * scale) + ((value >= 0.0f) ? 0.5f : -0.5f));
+  if (scaled > INT16_MAX)
+  {
+    scaled = INT16_MAX;
+  }
+  else if (scaled < INT16_MIN)
+  {
+    scaled = INT16_MIN;
+  }
+
+  return (int16_t)scaled;
+}
+
+static void FillWristWirelessFrame(WirelessWristFrame_t *frame,
+                                   uint16_t seq,
+                                   uint32_t tick,
+                                   const LSM6DSR_Data_t *imu_raw,
+                                   const IMUProc_Euler_t *euler,
+                                   uint8_t imu_valid)
+{
+  frame->seq = seq;
+  frame->tick = tick;
+  frame->acc_mg[0] = FloatToI16Scaled(imu_raw->acc_g_x, 1000.0f);
+  frame->acc_mg[1] = FloatToI16Scaled(imu_raw->acc_g_y, 1000.0f);
+  frame->acc_mg[2] = FloatToI16Scaled(imu_raw->acc_g_z, 1000.0f);
+  frame->gyro_dps_x10[0] = FloatToI16Scaled(imu_raw->gyro_dps_x, 10.0f);
+  frame->gyro_dps_x10[1] = FloatToI16Scaled(imu_raw->gyro_dps_y, 10.0f);
+  frame->gyro_dps_x10[2] = FloatToI16Scaled(imu_raw->gyro_dps_z, 10.0f);
+  frame->angle_x100[0] = AngleToX100(euler->roll_deg);
+  frame->angle_x100[1] = AngleToX100(euler->pitch_deg);
+  frame->angle_x100[2] = AngleToX100(euler->yaw_deg);
+  /* 接入 MKS142 心率：有效时填入 bpm 并置 status bit1（g_heart_data 同文件，单字节读无需加锁）。 */
+  frame->heart_rate = (uint16_t)g_heart_data.heart_rate;
+  frame->status = (uint8_t)((imu_valid != 0U ? 0x01U : 0x00U)
+                            | (g_heart_valid != 0U ? 0x02U : 0x00U));
+}
+/* USER CODE END 0 */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
@@ -200,9 +260,6 @@ const osSemaphoreAttr_t adcCpltSem_attributes = {
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 void StartHeartRateTask(void *argument);
-static void FillWristWirelessFrame(WirelessWristFrame_t *frame, uint16_t seq, uint32_t tick,
-                                   const LSM6DSR_Data_t *imu_raw,
-                                   const IMUProc_Quaternion_t *imu_quat, uint16_t heart_rate);
 /* USER CODE END FunctionPrototypes */
 
 /**
@@ -267,7 +324,7 @@ void MX_FREERTOS_Init(void) {
   /* creation of EmgTask */
   EmgTaskHandle = osThreadNew(StartEmgTask, NULL, &EmgTask_attributes);
 
-  /* creation of WirelessTask */
+  /* HC-05 transparent UART link to the upper-arm node. */
   WirelessTaskHandle = osThreadNew(StartWirelessTask, NULL, &WirelessTask_attributes);
 
   /* creation of UiTask */
@@ -395,7 +452,6 @@ void StartSensorTask(void *argument)
       /* Publish wrist IMU data for debug, display, and wireless upload to the upper-arm node. */
       wrist_imu_raw = imu_data;
       wrist_imu_euler = imu_state.attitude.euler;
-      wrist_imu_quat = imu_state.attitude.q;
       wrist_imu_valid = 1U;
       taskEXIT_CRITICAL();
     }
@@ -466,9 +522,10 @@ void StartWirelessTask(void *argument)
   uint8_t tx_buf[WIRELESS_WRIST_FRAME_SIZE];
   WirelessWristFrame_t wrist_frame;
   LSM6DSR_Data_t imu_raw;
-  IMUProc_Quaternion_t imu_quat;
+  IMUProc_Euler_t imu_euler;
   uint16_t seq = 0U;
   uint32_t last_debug_tick = 0U;
+  uint32_t tx_count = 0U;
   uint8_t imu_valid;
 
   (void)argument;
@@ -485,54 +542,55 @@ void StartWirelessTask(void *argument)
 
   WirelessLink_Init();
 
-  osMutexAcquire(uart2MutexHandle, osWaitForever);
-  printf("Wireless USART1 TX start\r\n");
-  osMutexRelease(uart2MutexHandle);
+  printf("HC05 USART1 TX task start, baud=9600\r\n");
 
   /* Infinite loop */
   for(;;)
   {
     taskENTER_CRITICAL();
     imu_raw = wrist_imu_raw;
-    imu_quat = wrist_imu_quat;
+    imu_euler = wrist_imu_euler;
     imu_valid = wrist_imu_valid;
     taskEXIT_CRITICAL();
 
-    if (imu_valid != 0U)
+    /* Keep sending heartbeat frames even before the IMU becomes valid.
+       This lets the upper-arm node verify the HC-05 UART link independently. */
+    FillWristWirelessFrame(&wrist_frame,
+                           seq++,
+                           osKernelGetTickCount(),
+                           &imu_raw,
+                           &imu_euler,
+                           imu_valid);
+
+    if (WirelessLink_BuildWristFrame(tx_buf, &wrist_frame) != 0U)
     {
-      FillWristWirelessFrame(&wrist_frame,
-                             seq++,
-                             osKernelGetTickCount(),
-                             &imu_raw,
-                             &imu_quat,
-                             /* Heart-rate UART is not integrated yet. */
-                             0U);
-
-      if (WirelessLink_BuildWristFrame(tx_buf, &wrist_frame) != 0U)
+      osMutexAcquire(uart1MutexHandle, osWaitForever);
+      if (HAL_UART_Transmit(&huart1, tx_buf, WIRELESS_WRIST_FRAME_SIZE, 50U) == HAL_OK)
       {
-        osMutexAcquire(uart1MutexHandle, osWaitForever);
-        (void)HAL_UART_Transmit(&huart1, tx_buf, WIRELESS_WRIST_FRAME_SIZE, 20U);
-        osMutexRelease(uart1MutexHandle);
+        tx_count++;
       }
-
-      if ((osKernelGetTickCount() - last_debug_tick) >= 1000U)
-      {
-        last_debug_tick = osKernelGetTickCount();
-        osMutexAcquire(uart2MutexHandle, osWaitForever);
-//        printf("WRIST_TX seq=%u q=%d,%d,%d,%d gyro=%d,%d,%d hr=%u\r\n",
-//               (unsigned int)wrist_frame.seq,
-//               (int)wrist_frame.q_x10000[0],
-//               (int)wrist_frame.q_x10000[1],
-//               (int)wrist_frame.q_x10000[2],
-//               (int)wrist_frame.q_x10000[3],
-//               (int)wrist_frame.gyro_raw[0],
-//               (int)wrist_frame.gyro_raw[1],
-//               (int)wrist_frame.gyro_raw[2],
-//               (unsigned int)wrist_frame.heart_rate);
-        osMutexRelease(uart2MutexHandle);
-      }
+      osMutexRelease(uart1MutexHandle);
     }
-    osDelay(20);
+
+    if ((osKernelGetTickCount() - last_debug_tick) >= 1000U)
+    {
+      last_debug_tick = osKernelGetTickCount();
+      printf("HC05_TX count=%lu seq=%u valid=%u acc_mg=%d,%d,%d gyro_x10=%d,%d,%d angle_x100=%d,%d,%d\r\n",
+             (unsigned long)tx_count,
+             (unsigned int)wrist_frame.seq,
+             (unsigned int)imu_valid,
+             (int)wrist_frame.acc_mg[0],
+             (int)wrist_frame.acc_mg[1],
+             (int)wrist_frame.acc_mg[2],
+             (int)wrist_frame.gyro_dps_x10[0],
+             (int)wrist_frame.gyro_dps_x10[1],
+             (int)wrist_frame.gyro_dps_x10[2],
+             (int)wrist_frame.angle_x100[0],
+             (int)wrist_frame.angle_x100[1],
+             (int)wrist_frame.angle_x100[2]);
+    }
+
+    osDelay(WRIST_WIRELESS_PERIOD_MS);
   }
   /* USER CODE END WirelessTask */
 }
@@ -567,9 +625,9 @@ void StartDisplayTask(void *argument)
   /* USER CODE BEGIN DisplayTask */
   (void)argument;
 
-  osMutexAcquire(uart2MutexHandle, osWaitForever);
-  printf("LCD backlight blink test start\r\n");
-  osMutexRelease(uart2MutexHandle);
+//  osMutexAcquire(uart2MutexHandle, osWaitForever);
+//  printf("LCD backlight blink test start\r\n");
+//  osMutexRelease(uart2MutexHandle);
 
   for (uint8_t i = 0U; i < 3U; i++)
   {
@@ -582,9 +640,9 @@ void StartDisplayTask(void *argument)
   LCD_SetBacklight(1U);
   osDelay(300);
 
-  osMutexAcquire(uart2MutexHandle, osWaitForever);
-  printf("LCD touch test start\r\n");
-  osMutexRelease(uart2MutexHandle);
+//  osMutexAcquire(uart2MutexHandle, osWaitForever);
+//  printf("LCD touch test start\r\n");
+//  osMutexRelease(uart2MutexHandle);
 
   {
     HAL_StatusTypeDef lcd_status;
@@ -593,15 +651,15 @@ void StartDisplayTask(void *argument)
     lcd_status = LCD_Init();
     touch_status = CST816T_Init();
 
-    osMutexAcquire(uart2MutexHandle, osWaitForever);
-    printf("LCD init status=%d spi_status=%d spi_err=0x%08lX spi_state=%u touch_status=%d i2c_err=0x%08lX\r\n",
-           (int)lcd_status,
-           (int)LCD_GetLastStatus(),
-           (unsigned long)hspi3.ErrorCode,
-           (unsigned int)hspi3.State,
-           (int)touch_status,
-           (unsigned long)hi2c1.ErrorCode);
-    osMutexRelease(uart2MutexHandle);
+//    osMutexAcquire(uart2MutexHandle, osWaitForever);
+//    printf("LCD init status=%d spi_status=%d spi_err=0x%08lX spi_state=%u touch_status=%d i2c_err=0x%08lX\r\n",
+//           (int)lcd_status,
+//           (int)LCD_GetLastStatus(),
+//           (unsigned long)hspi3.ErrorCode,
+//           (unsigned int)hspi3.State,
+//           (int)touch_status,
+//           (unsigned long)hi2c1.ErrorCode);
+//    osMutexRelease(uart2MutexHandle);
   }
 
   LCD_FillScreen(LCD_COLOR_BLACK);
@@ -710,31 +768,6 @@ void StartDebugTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-/**
-  * @brief  用 IMU 原始数据与姿态四元数填充腕部无线帧结构。
-  *         q_x10000 = 四元数 ×10000，gyro_raw 取原始计数；heart_rate 由调用方传入。
-  */
-static void FillWristWirelessFrame(WirelessWristFrame_t *frame, uint16_t seq, uint32_t tick,
-                                   const LSM6DSR_Data_t *imu_raw,
-                                   const IMUProc_Quaternion_t *imu_quat, uint16_t heart_rate)
-{
-  if ((frame == NULL) || (imu_raw == NULL) || (imu_quat == NULL))
-  {
-    return;
-  }
-
-  frame->seq = seq;
-  frame->tick = tick;
-  frame->q_x10000[0] = (int16_t)(imu_quat->w * 10000.0f);
-  frame->q_x10000[1] = (int16_t)(imu_quat->x * 10000.0f);
-  frame->q_x10000[2] = (int16_t)(imu_quat->y * 10000.0f);
-  frame->q_x10000[3] = (int16_t)(imu_quat->z * 10000.0f);
-  frame->gyro_raw[0] = imu_raw->gyro_x;
-  frame->gyro_raw[1] = imu_raw->gyro_y;
-  frame->gyro_raw[2] = imu_raw->gyro_z;
-  frame->heart_rate = heart_rate;
-}
-
 /**
   * @brief  心率模块任务：发采集指令、逐字节中断收实时包、解析后发布健康数据。
   */
