@@ -414,3 +414,31 @@ uint16_t LCD_DrawNumberX10(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint1
 
     return cx;
 }
+
+/* 画 3 位无符号整数（百/十/个），高位前导零留空，个位恒画。用于心率等整数值。 */
+uint16_t LCD_DrawNumberU(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t t,
+                         uint32_t value, uint16_t color, uint16_t bg)
+{
+    uint16_t gap = t;
+    uint16_t cx = x;
+    uint8_t hundreds;
+    uint8_t tens;
+    uint8_t ones;
+
+    if (value > 999U)
+    {
+        value = 999U;
+    }
+    hundreds = (uint8_t)((value / 100U) % 10U);
+    tens = (uint8_t)((value / 10U) % 10U);
+    ones = (uint8_t)(value % 10U);
+
+    LCD_DrawSeg7Digit(cx, y, w, h, t, (value < 100U) ? 0xFFU : hundreds, color, bg);
+    cx = (uint16_t)(cx + w + gap);
+    LCD_DrawSeg7Digit(cx, y, w, h, t, (value < 10U) ? 0xFFU : tens, color, bg);
+    cx = (uint16_t)(cx + w + gap);
+    LCD_DrawSeg7Digit(cx, y, w, h, t, ones, color, bg);
+    cx = (uint16_t)(cx + w + gap);
+
+    return cx;
+}

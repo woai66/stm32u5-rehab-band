@@ -31,7 +31,9 @@
 #include "touch_cst816t.h"
 #include "usart.h"
 #include "wireless_link.h"
+#include "mks142.h"
 #include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,6 +49,10 @@
 #define IMU_GYRO_DEADBAND_RAW  (2)
 /* 置 1 时 DebugTask 经 UART4 打印实时姿态角（带符号，单位 0.1°），仅调试用 */
 #define DEBUG_ANGLE_PRINT  (0)
+/* 置 1 时 HeartRateTask 经 UART4 打印心率/血氧/血压，仅调试用 */
+#define DEBUG_HR_PRINT  (1)
+/* 置 1：临时用 USART1(PA9/PA10) 裸读测试 MKS-142；测完置 0 回正式 USART2 方案 */
+#define MKS142_USE_WIRELESS_USART1  (0)
 
 /* USER CODE END PD */
 
@@ -63,45 +69,27 @@ static IMUProc_Euler_t wrist_imu_euler;
 static IMUProc_Quaternion_t wrist_imu_quat;
 static uint8_t wrist_imu_valid;
 
+/* MKS-142 心率模块：帧解析器与对外发布的健康数据（逐字节中断接收） */
+static MKS142_Parser_t s_mks142_parser;
+static MKS142_Data_t g_heart_data;
+static uint8_t g_heart_valid;
+static volatile uint32_t s_mks142_rx_events;
+static volatile uint32_t s_mks142_rx_bytes;
+static uint8_t s_mks142_u2_byte;   /* USART2 正式：中断逐字节接收缓冲 */
+static uint8_t s_mks142_u1_byte;   /* USART1 测试：中断逐字节接收缓冲 */
+
+osThreadId_t HeartRateTaskHandle;
+const osThreadAttr_t HeartRateTask_attributes = {
+  .name = "HeartRateTask",
+  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 512 * 4
+};
+osSemaphoreId_t mks142FrameSemHandle;
+const osSemaphoreAttr_t mks142FrameSem_attributes = {
+  .name = "mks142FrameSem"
+};
+
 /* USER CODE END Variables */
-
-/* USER CODE BEGIN 0 */
-static int16_t FloatToQ10000(float value)
-{
-  int32_t scaled;
-
-  if (value > 1.0f)
-  {
-    value = 1.0f;
-  }
-  else if (value < -1.0f)
-  {
-    value = -1.0f;
-  }
-
-  scaled = (int32_t)((value * 10000.0f) + ((value >= 0.0f) ? 0.5f : -0.5f));
-  return (int16_t)scaled;
-}
-
-static void FillWristWirelessFrame(WirelessWristFrame_t *frame,
-                                   uint16_t seq,
-                                   uint32_t tick,
-                                   const LSM6DSR_Data_t *imu_raw,
-                                   const IMUProc_Quaternion_t *quat,
-                                   uint16_t heart_rate)
-{
-  frame->seq = seq;
-  frame->tick = tick;
-  frame->q_x10000[0] = FloatToQ10000(quat->w);
-  frame->q_x10000[1] = FloatToQ10000(quat->x);
-  frame->q_x10000[2] = FloatToQ10000(quat->y);
-  frame->q_x10000[3] = FloatToQ10000(quat->z);
-  frame->gyro_raw[0] = imu_raw->gyro_x;
-  frame->gyro_raw[1] = imu_raw->gyro_y;
-  frame->gyro_raw[2] = imu_raw->gyro_z;
-  frame->heart_rate = heart_rate;
-}
-/* USER CODE END 0 */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
@@ -156,7 +144,7 @@ osThreadId_t DebugTaskHandle;
 const osThreadAttr_t DebugTask_attributes = {
   .name = "DebugTask",
   .priority = (osPriority_t) osPriorityLow,
-  .stack_size = 1024 * 4
+  .stack_size = 512 * 4
 };
 /* Definitions for uart1Mutex */
 osMutexId_t uart1MutexHandle;
@@ -211,7 +199,10 @@ const osSemaphoreAttr_t adcCpltSem_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+void StartHeartRateTask(void *argument);
+static void FillWristWirelessFrame(WirelessWristFrame_t *frame, uint16_t seq, uint32_t tick,
+                                   const LSM6DSR_Data_t *imu_raw,
+                                   const IMUProc_Quaternion_t *imu_quat, uint16_t heart_rate);
 /* USER CODE END FunctionPrototypes */
 
 /**
@@ -248,7 +239,7 @@ void MX_FREERTOS_Init(void) {
   adcCpltSemHandle = osSemaphoreNew(1, 0, &adcCpltSem_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
+  mks142FrameSemHandle = osSemaphoreNew(1, 0, &mks142FrameSem_attributes);
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -273,8 +264,8 @@ void MX_FREERTOS_Init(void) {
   /* creation of AlgoTask */
   AlgoTaskHandle = osThreadNew(StartAlgoTask, NULL, &AlgoTask_attributes);
 
-  /* Wrist node has no EMG sensor. Keep the task entry generated, but do not start it. */
-  EmgTaskHandle = NULL;
+  /* creation of EmgTask */
+  EmgTaskHandle = osThreadNew(StartEmgTask, NULL, &EmgTask_attributes);
 
   /* creation of WirelessTask */
   WirelessTaskHandle = osThreadNew(StartWirelessTask, NULL, &WirelessTask_attributes);
@@ -289,7 +280,7 @@ void MX_FREERTOS_Init(void) {
   DebugTaskHandle = osThreadNew(StartDebugTask, NULL, &DebugTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  HeartRateTaskHandle = osThreadNew(StartHeartRateTask, NULL, &HeartRateTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -481,6 +472,17 @@ void StartWirelessTask(void *argument)
   uint8_t imu_valid;
 
   (void)argument;
+
+#if MKS142_USE_WIRELESS_USART1
+  osMutexAcquire(uart2MutexHandle, osWaitForever);
+  printf("Wireless USART1 TX disabled for MKS142 test\r\n");
+  osMutexRelease(uart2MutexHandle);
+  for (;;)
+  {
+    osDelay(1000);
+  }
+#endif
+
   WirelessLink_Init();
 
   osMutexAcquire(uart2MutexHandle, osWaitForever);
@@ -708,6 +710,170 @@ void StartDebugTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+/**
+  * @brief  用 IMU 原始数据与姿态四元数填充腕部无线帧结构。
+  *         q_x10000 = 四元数 ×10000，gyro_raw 取原始计数；heart_rate 由调用方传入。
+  */
+static void FillWristWirelessFrame(WirelessWristFrame_t *frame, uint16_t seq, uint32_t tick,
+                                   const LSM6DSR_Data_t *imu_raw,
+                                   const IMUProc_Quaternion_t *imu_quat, uint16_t heart_rate)
+{
+  if ((frame == NULL) || (imu_raw == NULL) || (imu_quat == NULL))
+  {
+    return;
+  }
 
+  frame->seq = seq;
+  frame->tick = tick;
+  frame->q_x10000[0] = (int16_t)(imu_quat->w * 10000.0f);
+  frame->q_x10000[1] = (int16_t)(imu_quat->x * 10000.0f);
+  frame->q_x10000[2] = (int16_t)(imu_quat->y * 10000.0f);
+  frame->q_x10000[3] = (int16_t)(imu_quat->z * 10000.0f);
+  frame->gyro_raw[0] = imu_raw->gyro_x;
+  frame->gyro_raw[1] = imu_raw->gyro_y;
+  frame->gyro_raw[2] = imu_raw->gyro_z;
+  frame->heart_rate = heart_rate;
+}
+
+/**
+  * @brief  心率模块任务：发采集指令、逐字节中断收实时包、解析后发布健康数据。
+  */
+void StartHeartRateTask(void *argument)
+{
+  MKS142_Data_t hr;
+  uint32_t last_debug_tick = 0U;
+  HAL_StatusTypeDef rx_status;
+  const uint8_t start_cmd[] = {MKS142_CMD_ACQUIRE_ON};
+
+  (void)argument;
+
+  MKS142_ParserReset(&s_mks142_parser);
+
+#if MKS142_USE_WIRELESS_USART1
+  /* 临时：USART1(PA9=TX/PA10=RX) 复刻例程的逐字节中断收帧测试新模块。
+     模块 UTX→PA10、URX→PA9、共地、3.3V。先发 0x8A，再开中断逐字节接收，
+     由 HAL_UART_RxCpltCallback 喂解析器，集满一帧打印 HR。 */
+  (void)HAL_UART_Transmit(&huart1, (uint8_t *)start_cmd, sizeof(start_cmd), 50U);
+  (void)HAL_UART_Receive_IT(&huart1, &s_mks142_u1_byte, 1U);
+
+  for (;;)
+  {
+    /* 周期重发采集开命令并打印接收计数，便于观察是否在收数据 */
+    (void)HAL_UART_Transmit(&huart1, (uint8_t *)start_cmd, sizeof(start_cmd), 50U);
+
+    if (huart1.RxState == HAL_UART_STATE_READY)
+    {
+      (void)HAL_UART_Receive_IT(&huart1, &s_mks142_u1_byte, 1U);
+    }
+
+    osMutexAcquire(uart2MutexHandle, osWaitForever);
+    printf("MKS142 usart1 bytes=%lu events=%lu err=0x%08lX\r\n",
+           (unsigned long)s_mks142_rx_bytes,
+           (unsigned long)s_mks142_rx_events,
+           (unsigned long)huart1.ErrorCode);
+    osMutexRelease(uart2MutexHandle);
+
+    osDelay(1000);
+  }
+#endif
+
+  /* 模块上电后必须先收到采集开指令 0x8A 才会上报实时包；只发一次，避免打断上报。 */
+  (void)HAL_UART_Transmit(&huart2, (uint8_t *)start_cmd, sizeof(start_cmd), 50U);
+
+  /* 复刻例程：逐字节中断接收，回调里喂解析器，避免 DMA 空闲分帧导致的丢字节/错位。 */
+  rx_status = HAL_UART_Receive_IT(&huart2, &s_mks142_u2_byte, 1U);
+
+#if DEBUG_HR_PRINT
+  osMutexAcquire(uart2MutexHandle, osWaitForever);
+  printf("MKS142 start tx=0x%02X rx_status=%d uart_err=0x%08lX\r\n",
+         (unsigned int)start_cmd[0],
+         (int)rx_status,
+         (unsigned long)huart2.ErrorCode);
+  osMutexRelease(uart2MutexHandle);
+#endif
+
+  for (;;)
+  {
+    /* 模块每约 1.28s 上报一帧，超时取 2000ms（> 上报周期），避免误判超时打断流。 */
+    if (osSemaphoreAcquire(mks142FrameSemHandle, 2000U) == osOK)
+    {
+      taskENTER_CRITICAL();
+      hr = g_heart_data;
+      taskEXIT_CRITICAL();
+
+#if DEBUG_HR_PRINT
+      osMutexAcquire(uart2MutexHandle, osWaitForever);
+      printf("HR=%u SpO2=%u SBP=%u DBP=%u\r\n",
+             (unsigned int)hr.heart_rate,
+             (unsigned int)hr.spo2,
+             (unsigned int)hr.sbp,
+             (unsigned int)hr.dbp);
+      osMutexRelease(uart2MutexHandle);
+#endif
+    }
+    else
+    {
+      /* 一帧都没收到过：模块可能未启动，补发采集开；已收到过则绝不重发，
+         避免打断模块的周期上报。同时确保中断接收处于已武装状态。 */
+      if (s_mks142_rx_events == 0U)
+      {
+        (void)HAL_UART_Transmit(&huart2, (uint8_t *)start_cmd, sizeof(start_cmd), 50U);
+      }
+      if (huart2.RxState == HAL_UART_STATE_READY)
+      {
+        (void)HAL_UART_Receive_IT(&huart2, &s_mks142_u2_byte, 1U);
+      }
+
+#if DEBUG_HR_PRINT
+      if ((osKernelGetTickCount() - last_debug_tick) >= 1000U)
+      {
+        last_debug_tick = osKernelGetTickCount();
+        osMutexAcquire(uart2MutexHandle, osWaitForever);
+        printf("MKS142 wait events=%lu bytes=%lu uart_err=0x%08lX\r\n",
+               (unsigned long)s_mks142_rx_events,
+               (unsigned long)s_mks142_rx_bytes,
+               (unsigned long)huart2.ErrorCode);
+        osMutexRelease(uart2MutexHandle);
+      }
+#endif
+    }
+  }
+}
+
+/**
+  * @brief  UART 逐字节接收完成回调（复刻例程逐字节收帧）。
+  *         USART2(心率模块)：喂解析器，集满一帧发布健康数据并置信号量，
+  *         随后重新武装接收；回调内只做轻量解析与发布，不做耗时操作。
+  */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  MKS142_Data_t frame;
+
+  if (huart->Instance == USART2)
+  {
+    s_mks142_rx_bytes++;
+    if (MKS142_FeedByte(&s_mks142_parser, s_mks142_u2_byte, &frame) != 0U)
+    {
+      s_mks142_rx_events++;
+      g_heart_data = frame;
+      g_heart_valid = 1U;
+      (void)osSemaphoreRelease(mks142FrameSemHandle);
+    }
+    (void)HAL_UART_Receive_IT(&huart2, &s_mks142_u2_byte, 1U);
+  }
+#if MKS142_USE_WIRELESS_USART1
+  else if (huart->Instance == USART1)
+  {
+    s_mks142_rx_bytes++;
+    if (MKS142_FeedByte(&s_mks142_parser, s_mks142_u1_byte, &frame) != 0U)
+    {
+      s_mks142_rx_events++;
+      g_heart_data = frame;
+      g_heart_valid = 1U;
+    }
+    (void)HAL_UART_Receive_IT(&huart1, &s_mks142_u1_byte, 1U);
+  }
+#endif
+}
 /* USER CODE END Application */
 
