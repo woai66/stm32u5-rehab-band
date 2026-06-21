@@ -118,6 +118,8 @@ static void FillWristWirelessFrame(WirelessWristFrame_t *frame,
   frame->angle_x100[0] = AngleToX100(euler->roll_deg);
   frame->angle_x100[1] = AngleToX100(euler->pitch_deg);
   frame->angle_x100[2] = AngleToX100(euler->yaw_deg);
+  /* 心率链路在 feat/heart-rate-mks142 分支接入，本节点暂保留字段，rebase 后填入实际值并置 status bit1。 */
+  frame->heart_rate = 0U;
   frame->status = (imu_valid != 0U) ? 0x01U : 0x00U;
 }
 /* USER CODE END 0 */

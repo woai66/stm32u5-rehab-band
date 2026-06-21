@@ -57,7 +57,8 @@ static void DecodeFrame(const uint8_t *buf, WirelessWristFrame_t *frame)
   frame->angle_x100[0] = ReadI16Le(&buf[19]);
   frame->angle_x100[1] = ReadI16Le(&buf[21]);
   frame->angle_x100[2] = ReadI16Le(&buf[23]);
-  frame->status = buf[25];
+  frame->heart_rate = ReadU16Le(&buf[25]);
+  frame->status = buf[27];
 }
 
 void WirelessLink_Init(void)

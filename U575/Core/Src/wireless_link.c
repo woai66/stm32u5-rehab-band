@@ -98,7 +98,8 @@ uint8_t WirelessLink_BuildWristFrame(uint8_t *buf, const WirelessWristFrame_t *f
   WriteI16Le(&buf[19], frame->angle_x100[0]);
   WriteI16Le(&buf[21], frame->angle_x100[1]);
   WriteI16Le(&buf[23], frame->angle_x100[2]);
-  buf[25] = frame->status;
+  WriteU16Le(&buf[25], frame->heart_rate);
+  buf[27] = frame->status;
   buf[WIRELESS_WRIST_FRAME_SIZE - 1U] = CalcChecksum(buf, WIRELESS_WRIST_FRAME_SIZE - 1U);
 
   return WIRELESS_WRIST_FRAME_SIZE;

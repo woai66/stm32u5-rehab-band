@@ -18,7 +18,7 @@ extern "C" {
 #include <stdint.h>
 
 #define WIRELESS_FRAME_HEADER        (0xAAU)
-#define WIRELESS_WRIST_FRAME_SIZE    (27U)
+#define WIRELESS_WRIST_FRAME_SIZE    (29U)
 
 typedef struct
 {
@@ -27,7 +27,8 @@ typedef struct
   int16_t acc_mg[3];
   int16_t gyro_dps_x10[3];
   int16_t angle_x100[3];
-  uint8_t status;
+  uint16_t heart_rate;      /* bpm, 0 = invalid. */
+  uint8_t status;           /* bit0: IMU valid; bit1: heart_rate valid. */
 } WirelessWristFrame_t;
 
 typedef struct

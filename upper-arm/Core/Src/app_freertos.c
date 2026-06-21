@@ -53,6 +53,7 @@ typedef struct
   int16_t wrist_acc_mg[3];
   int16_t wrist_gyro_x10[3];
   int16_t wrist_angle_x100[3];
+  uint16_t wrist_heart_rate;
   int32_t elbow_relative_pitch_x100;
   int32_t elbow_angle_x100;
   int32_t forearm_rotation_angle_x100;
@@ -907,6 +908,7 @@ void StartAlgoTask(void *argument)
         rehab_frame.wrist_gyro_x10[i] = wrist_frame.gyro_dps_x10[i];
         rehab_frame.wrist_angle_x100[i] = wrist_frame.angle_x100[i];
       }
+      rehab_frame.wrist_heart_rate = wrist_frame.heart_rate;
 
       if (elbow_zero_valid == 0U)
       {
