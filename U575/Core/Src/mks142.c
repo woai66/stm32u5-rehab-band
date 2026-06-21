@@ -51,6 +51,14 @@ uint8_t MKS142_FeedByte(MKS142_Parser_t *parser, uint8_t byte, MKS142_Data_t *ou
         return 0U;
     }
 
+    /* 帧内不应再出现 0xFF：若出现，说明此前丢字节/噪声导致错位，按新帧头重新对帧 */
+    if (byte == MKS142_FRAME_HEAD)
+    {
+        parser->buf[0] = byte;
+        parser->index = 1U;
+        return 0U;
+    }
+
     parser->buf[parser->index] = byte;
     parser->index++;
 

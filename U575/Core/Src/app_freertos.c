@@ -133,6 +133,15 @@ static void FillWristWirelessFrame(WirelessWristFrame_t *frame,
                                    const IMUProc_Euler_t *euler,
                                    uint8_t imu_valid)
 {
+  MKS142_Data_t heart_snapshot;
+  uint8_t heart_valid;
+
+  /* 心率由 USART2 ISR 发布，临界区拷快照保证 valid 与 bpm 一致（参照 wrist_imu_* 约定）。 */
+  taskENTER_CRITICAL();
+  heart_snapshot = g_heart_data;
+  heart_valid = g_heart_valid;
+  taskEXIT_CRITICAL();
+
   frame->seq = seq;
   frame->tick = tick;
   frame->acc_mg[0] = FloatToI16Scaled(imu_raw->acc_g_x, 1000.0f);
@@ -144,10 +153,10 @@ static void FillWristWirelessFrame(WirelessWristFrame_t *frame,
   frame->angle_x100[0] = AngleToX100(euler->roll_deg);
   frame->angle_x100[1] = AngleToX100(euler->pitch_deg);
   frame->angle_x100[2] = AngleToX100(euler->yaw_deg);
-  /* 接入 MKS142 心率：有效时填入 bpm 并置 status bit1（g_heart_data 同文件，单字节读无需加锁）。 */
-  frame->heart_rate = (uint16_t)g_heart_data.heart_rate;
+  /* 接入 MKS142 心率：有效时填入 bpm 并置 status bit1。 */
+  frame->heart_rate = (uint16_t)heart_snapshot.heart_rate;
   frame->status = (uint8_t)((imu_valid != 0U ? 0x01U : 0x00U)
-                            | (g_heart_valid != 0U ? 0x02U : 0x00U));
+                            | (heart_valid != 0U ? 0x02U : 0x00U));
 }
 /* USER CODE END 0 */
 /* Definitions for defaultTask */
@@ -846,6 +855,12 @@ void StartHeartRateTask(void *argument)
     }
     else
     {
+      /* 超时(>一个上报周期)未收到新帧：心率数据已过期，清有效位避免无线帧带陈旧 bpm。 */
+      taskENTER_CRITICAL();
+      g_heart_valid = 0U;
+      g_heart_data.heart_rate = 0U;
+      taskEXIT_CRITICAL();
+
       /* 一帧都没收到过：模块可能未启动，补发采集开；已收到过则绝不重发，
          避免打断模块的周期上报。同时确保中断接收处于已武装状态。 */
       if (s_mks142_rx_events == 0U)
