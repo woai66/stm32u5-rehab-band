@@ -18,15 +18,17 @@ extern "C" {
 #include <stdint.h>
 
 #define WIRELESS_FRAME_HEADER        (0xAAU)
-#define WIRELESS_WRIST_FRAME_SIZE    (24U)
+#define WIRELESS_WRIST_FRAME_SIZE    (29U)
 
 typedef struct
 {
-  uint16_t seq; //手腕端帧序列号
-  uint32_t tick; //手腕端本地系统时间戳
-  int16_t q_x10000[4]; //四元数放大 10000 倍整型存储
-  int16_t gyro_raw[3]; //手腕 IMU 陀螺原始 ADC 值
-  uint16_t heart_rate; //心率数值
+  uint16_t seq;
+  uint32_t tick;
+  int16_t acc_mg[3];        /* Wrist acceleration, g * 1000. */
+  int16_t gyro_dps_x10[3];  /* Wrist angular velocity, deg/s * 10. */
+  int16_t angle_x100[3];    /* Wrist roll/pitch/yaw, deg * 100. */
+  uint16_t heart_rate;      /* Wrist heart rate, bpm, 0 = invalid. */
+  uint8_t status;           /* bit0: wrist IMU valid; bit1: heart_rate valid. */
 } WirelessWristFrame_t;
 
 typedef struct
