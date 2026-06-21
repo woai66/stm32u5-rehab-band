@@ -21,20 +21,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # 使用 Keil UV4 命令行批量编译，需本机已安装 Keil MDK 并把 UV4.exe 加入 PATH
-UV4.exe -b U575/MDK-ARM/U575.uvprojx -t U575 -j0
+UV4.exe -b U575/MDK-ARM/wrist.uvprojx -t wrist -j0
 ```
 
 如果 `UV4.exe` 不在 PATH，需要使用本机实际安装路径，例如：
 
 ```bash
-"/c/Keil_v5/UV4/UV4.exe" -b U575/MDK-ARM/U575.uvprojx -t U575 -j0
+"/c/Keil_v5/UV4/UV4.exe" -b U575/MDK-ARM/wrist.uvprojx -t wrist -j0
 ```
 
 生成目标配置：
 
-- Keil target：`U575`
-- 工程文件：`U575/MDK-ARM/U575.uvprojx`
-- 输出目录：`U575/MDK-ARM/U575/`
+- Keil target：`wrist`
+- 工程文件：`U575/MDK-ARM/wrist.uvprojx`（原 `U575.uvprojx` 已改名）
+- 输出目录：`U575/MDK-ARM/wrist/`
 - 工程配置已开启 HEX 输出。
 
 下载方式：板子支持 SWD（ST-Link，PA13/PA14，需 Connect Under Reset）与 ISP（板载 USB 转串口，进 Bootloader 时 `J6` 跳线帽必须跳到 `USB` 侧）。目前没有单元测试；验证依赖 Keil 编译、下载到硬件后观察 LCD/触摸、UART4 串口、IMU 和任务运行状态。执行烧录、串口监视或外设交互前先向用户确认。

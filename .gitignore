@@ -1,5 +1,7 @@
 # Keil / MDK build outputs
 U575/MDK-ARM/U575/
+U575/MDK-ARM/wrist/
+U575/MDK-ARM/RTE/
 *.o
 *.d
 *.dep
@@ -18,7 +20,7 @@ U575/MDK-ARM/U575/
 *.uvoptx
 
 # Logs and temporary files
-*.log
+*.log 
 *.tmp
 *.temp
 *.bak
@@ -39,3 +41,6 @@ Thumbs.db
 
 # 个人 IDE 工程文件
 *.eprj2
+
+# 资料文件
+/备赛/MKS_142模块相关资料

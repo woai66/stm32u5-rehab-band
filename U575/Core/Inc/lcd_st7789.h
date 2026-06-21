@@ -30,6 +30,7 @@ void LCD_DrawPoint(uint16_t x, uint16_t y, uint16_t color);
 void LCD_DrawRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color);
 void LCD_DrawSeg7Digit(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t t, uint8_t digit, uint16_t color, uint16_t bg);
 uint16_t LCD_DrawNumberX10(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t t, int32_t value_x10, uint16_t color, uint16_t bg);
+uint16_t LCD_DrawNumberU(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t t, uint32_t value, uint16_t color, uint16_t bg);
 
 #ifdef __cplusplus
 }

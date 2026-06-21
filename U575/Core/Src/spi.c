@@ -251,10 +251,9 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     __HAL_RCC_GPIOC_CLK_ENABLE();
     /**SPI3 GPIO Configuration
     PC10     ------> SPI3_SCK
-    PC11     ------> SPI3_MISO
     PC12     ------> SPI3_MOSI
     */
-    GPIO_InitStruct.Pin = LCD_SCL_Pin|LCD_SDO_Pin|LCD_SDA_Pin;
+    GPIO_InitStruct.Pin = LCD_SCL_Pin|LCD_SDA_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -308,10 +307,9 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* spiHandle)
 
     /**SPI3 GPIO Configuration
     PC10     ------> SPI3_SCK
-    PC11     ------> SPI3_MISO
     PC12     ------> SPI3_MOSI
     */
-    HAL_GPIO_DeInit(GPIOC, LCD_SCL_Pin|LCD_SDO_Pin|LCD_SDA_Pin);
+    HAL_GPIO_DeInit(GPIOC, LCD_SCL_Pin|LCD_SDA_Pin);
 
     /* SPI3 interrupt Deinit */
     HAL_NVIC_DisableIRQ(SPI3_IRQn);
