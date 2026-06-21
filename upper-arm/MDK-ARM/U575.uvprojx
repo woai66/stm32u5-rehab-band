@@ -445,6 +445,16 @@
               <FilePath>../Core/Src/rehab_eval.c</FilePath>
             </File>
             <File>
+              <FileName>vibration_motor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/vibration_motor.c</FilePath>
+            </File>
+            <File>
+              <FileName>voice_i2c_slave.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/voice_i2c_slave.c</FilePath>
+            </File>
+            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/main.c</FilePath>

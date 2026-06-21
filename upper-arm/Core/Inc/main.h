@@ -59,6 +59,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define RUN_LED_Pin GPIO_PIN_13
 #define RUN_LED_GPIO_Port GPIOC
+#define MODE_KEY_Pin GPIO_PIN_0
+#define MODE_KEY_GPIO_Port GPIOC
 #define DEBUG_TX_Pin GPIO_PIN_0
 #define DEBUG_TX_GPIO_Port GPIOA
 #define DEBUG_RX_Pin GPIO_PIN_1
@@ -91,6 +93,8 @@ void Error_Handler(void);
 #define WIRELESS_RXD_GPIO_Port GPIOA
 #define WIRELESS_TXD_Pin GPIO_PIN_10
 #define WIRELESS_TXD_GPIO_Port GPIOA
+#define VIBRATION_Pin GPIO_PIN_11
+#define VIBRATION_GPIO_Port GPIOA
 #define USER_KEY_Pin GPIO_PIN_12
 #define USER_KEY_GPIO_Port GPIOA
 #define LCD_CS_Pin GPIO_PIN_15
@@ -109,6 +113,10 @@ void Error_Handler(void);
 #define LCD_DC_GPIO_Port GPIOB
 #define LCD_RST_Pin GPIO_PIN_9
 #define LCD_RST_GPIO_Port GPIOB
+#define VOICE_I2C_SCL_Pin GPIO_PIN_10
+#define VOICE_I2C_SCL_GPIO_Port GPIOB
+#define VOICE_I2C_SDA_Pin GPIO_PIN_14
+#define VOICE_I2C_SDA_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
