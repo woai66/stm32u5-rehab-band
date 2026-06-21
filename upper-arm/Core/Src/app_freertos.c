@@ -26,9 +26,11 @@
 #include "lsm6dsr.h"
 #include "emg_sensor.h"
 #include "imu_processing.h"
-#include "rehab_eval.h"
-#include "usart.h"
 #include "wireless_link.h"
+#include "rehab_eval.h"
+#include "voice_i2c_slave.h"
+#include "vibration_motor.h"
+#include "usart.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -78,7 +80,8 @@ typedef struct
 #define IMU_GYRO_DEADBAND_RAW  (2)
 #define DATA_STREAM_PERIOD_MS  (20U)
 #define EMG_UART4_RECORD_MODE  (1U)
-#define UPPER_GYRO_DEBUG_PRINT  (0U)
+/* 采样任务里的陀螺仪日志会阻塞 200Hz 采样，默认关闭，仅排查时置 1 */
+#define SENSOR_GYRO_DEBUG_PRINT  (0U)
 #define REHAB_ALGO_PERIOD_MS  (100U)
 #define REHAB_WINDOW_MS       (1000U)
 #define REHAB_ELBOW_RANGE_FLEX_X100       (2500)
@@ -743,7 +746,8 @@ void StartSensorTask(void *argument)
       debug_imu_valid = 1U;
       taskEXIT_CRITICAL();
 
-      if ((UPPER_GYRO_DEBUG_PRINT != 0U) && ((osKernelGetTickCount() - last_gyro_print_tick) >= 200U))
+#if SENSOR_GYRO_DEBUG_PRINT
+      if ((osKernelGetTickCount() - last_gyro_print_tick) >= 200U)
       {
         last_gyro_print_tick = osKernelGetTickCount();
         printf("GYRO raw=%d,%d,%d dps_x10=%ld,%ld,%ld\r\n",
@@ -1263,10 +1267,11 @@ void StartAlgoTask(void *argument)
       }
       else
       {
-        printf("REHAB waiting upper=%u wrist=%u wrist_status=0x%02X\r\n",
+        printf("REHAB waiting upper=%u wrist=%u wrist_status=0x%02X hr=%u\r\n",
                (unsigned int)upper_valid,
                (unsigned int)wrist_valid,
-               (unsigned int)wrist_frame.status);
+               (unsigned int)wrist_frame.status,
+               (unsigned int)wrist_frame.heart_rate);
       }
     }
 
@@ -1328,49 +1333,37 @@ void StartEmgTask(void *argument)
 void StartWirelessTask(void *argument)
 {
   /* USER CODE BEGIN WirelessTask */
-  uint8_t rx_byte;
   WirelessWristFrame_t wrist_frame;
   WirelessLinkStats_t stats;
-  uint8_t raw_sample[16];
   uint32_t last_debug_tick = 0U;
   uint32_t last_frame_tick = 0U;
-  uint32_t raw_rx_count = 0U;
-  uint32_t last_raw_rx_count = 0U;
-  uint8_t raw_sample_count = 0U;
   uint8_t has_frame = 0U;
 
   (void)argument;
 
   WirelessLink_Init();
-  printf("HC05 USART1 RX task start, baud=9600\r\n");
+  /* 开启 USART1 单字节中断接收，字节在 HAL_UART_RxCpltCallback 中喂给解析器 */
+  (void)HAL_UART_Receive_IT(&huart1, &wireless_rx_byte, 1U);
+  printf("Wrist link RX on USART1, baud=115200\r\n");
 
   /* Infinite loop */
   for(;;)
   {
-    osMutexAcquire(uart1MutexHandle, osWaitForever);
-    if (HAL_UART_Receive(&huart1, &rx_byte, 1U, 20U) == HAL_OK)
+    /* 接收在中断中完成，这里定期自愈：若接收被错误中断则重新挂起接收 */
+    if (HAL_UART_GetState(&huart1) == HAL_UART_STATE_READY)
     {
-      osMutexRelease(uart1MutexHandle);
-      raw_rx_count++;
-      if (raw_sample_count < sizeof(raw_sample))
-      {
-        raw_sample[raw_sample_count++] = rx_byte;
-      }
-
-      if (WirelessLink_PushByte(rx_byte, &wrist_frame) != 0U)
-      {
-        taskENTER_CRITICAL();
-        latest_wrist_frame = wrist_frame;
-        latest_wrist_valid = 1U;
-        taskEXIT_CRITICAL();
-
-        has_frame = 1U;
-        last_frame_tick = osKernelGetTickCount();
-      }
+      (void)HAL_UART_Receive_IT(&huart1, &wireless_rx_byte, 1U);
     }
-    else
+
+    if (WirelessLink_GetLatest(&wrist_frame) != 0U)
     {
-      osMutexRelease(uart1MutexHandle);
+      taskENTER_CRITICAL();
+      latest_wrist_frame = wrist_frame;
+      latest_wrist_valid = 1U;
+      taskEXIT_CRITICAL();
+
+      has_frame = 1U;
+      last_frame_tick = osKernelGetTickCount();
     }
 
     if ((osKernelGetTickCount() - last_debug_tick) >= 1000U)
@@ -1380,11 +1373,12 @@ void StartWirelessTask(void *argument)
 
       if (has_frame != 0U)
       {
-        printf("HC05_RX ok=%lu err=%lu seq=%u status=0x%02X acc_mg=%d,%d,%d gyro_x10=%d,%d,%d angle_x100=%d,%d,%d age=%lu\r\n",
+        printf("HC05_RX ok=%lu err=%lu seq=%u status=0x%02X hr=%u acc_mg=%d,%d,%d gyro_x10=%d,%d,%d angle_x100=%d,%d,%d age=%lu\r\n",
                (unsigned long)stats.frames_ok,
                (unsigned long)stats.checksum_errors,
                (unsigned int)wrist_frame.seq,
                (unsigned int)wrist_frame.status,
+               (unsigned int)wrist_frame.heart_rate,
                (int)wrist_frame.acc_mg[0],
                (int)wrist_frame.acc_mg[1],
                (int)wrist_frame.acc_mg[2],
@@ -1398,23 +1392,14 @@ void StartWirelessTask(void *argument)
       }
       else
       {
-        printf("HC05_RX waiting bytes=%lu delta=%lu resync=%lu err=%lu raw:",
-               (unsigned long)raw_rx_count,
-               (unsigned long)(raw_rx_count - last_raw_rx_count),
+        printf("HC05_RX waiting bytes=%lu resync=%lu err=%lu\r\n",
+               (unsigned long)stats.rx_bytes,
                (unsigned long)stats.resync_count,
                (unsigned long)stats.checksum_errors);
-        for (uint8_t i = 0U; i < raw_sample_count; i++)
-        {
-          printf(" %02X", (unsigned int)raw_sample[i]);
-        }
-        printf("\r\n");
       }
-
-      last_raw_rx_count = raw_rx_count;
-      raw_sample_count = 0U;
     }
 
-    osDelay(1);
+    osDelay(100);
   }
   /* USER CODE END WirelessTask */
 }
@@ -1513,11 +1498,37 @@ void StartDisplayTask(void *argument)
 void StartDebugTask(void *argument)
 {
   /* USER CODE BEGIN DebugTask */
+  uint8_t voice_cmd;
+  VoiceI2C_Status_t voice_status;
+  uint32_t last_voice_status_tick = 0U;
+
   (void)argument;
 
   /* Infinite loop */
   for(;;)
   {
+    if (VoiceI2C_GetCommand(&voice_cmd) != 0U)
+    {
+      printf("VOICE_I2C cmd='%c' 0x%02X\r\n",
+             ((voice_cmd >= 32U) && (voice_cmd <= 126U)) ? (char)voice_cmd : '.',
+             (unsigned int)voice_cmd);
+
+      if (voice_cmd == (uint8_t)'V')
+      {
+        Vibration_PulseBlocking(150U);
+      }
+    }
+
+    if ((osKernelGetTickCount() - last_voice_status_tick) >= 2000U)
+    {
+      last_voice_status_tick = osKernelGetTickCount();
+      VoiceI2C_GetStatus(&voice_status);
+      printf("VOICE_I2C addr8=0x42 rx=%lu err=%lu latest=0x%02X\r\n",
+             (unsigned long)voice_status.rx_count,
+             (unsigned long)voice_status.error_count,
+             (unsigned int)voice_status.latest_cmd);
+    }
+
     osDelay(100);
   }
   /* USER CODE END DebugTask */
@@ -1533,6 +1544,27 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     (void)WirelessLink_PushByte(wireless_rx_byte, NULL);
     (void)HAL_UART_Receive_IT(&huart1, &wireless_rx_byte, 1U);
   }
+}
+
+void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode)
+{
+  (void)AddrMatchCode;
+  VoiceI2C_HandleAddrCallback(hi2c, TransferDirection);
+}
+
+void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+  VoiceI2C_HandleRxCpltCallback(hi2c);
+}
+
+void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+  VoiceI2C_HandleListenCpltCallback(hi2c);
+}
+
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+  VoiceI2C_HandleErrorCallback(hi2c);
 }
 
 /* USER CODE END Application */

@@ -30,6 +30,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "vibration_motor.h"
+#include "voice_i2c_slave.h"
 
 /* USER CODE END Includes */
 
@@ -101,11 +103,14 @@ int main(void)
   MX_SPI1_Init();
   MX_TIM3_Init();
   MX_I2C1_Init();
+  MX_I2C2_Init();
   MX_SPI3_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   MX_UART4_Init();
   /* USER CODE BEGIN 2 */
+  Vibration_Init();
+  (void)VoiceI2C_Init();
 
 //  Debug_PrintfTest(); //测试printf函数
 

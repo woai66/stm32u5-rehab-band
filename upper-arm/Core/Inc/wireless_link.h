@@ -27,7 +27,7 @@ typedef struct
   int16_t acc_mg[3];        /* Wrist acceleration, g * 1000. */
   int16_t gyro_dps_x10[3];  /* Wrist angular velocity, deg/s * 10. */
   int16_t angle_x100[3];    /* Wrist roll/pitch/yaw, deg * 100. */
-  uint16_t heart_rate;      /* Wrist heart rate, bpm, 0 = invalid. */
+  uint16_t heart_rate;      /* bpm, 0 = invalid. */
   uint8_t status;           /* bit0: wrist IMU valid; bit1: heart_rate valid. */
 } WirelessWristFrame_t;
 
