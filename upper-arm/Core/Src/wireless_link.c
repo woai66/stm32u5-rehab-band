@@ -48,14 +48,16 @@ static void DecodeFrame(const uint8_t *buf, WirelessWristFrame_t *frame)
 {
   frame->seq = ReadU16Le(&buf[1]);
   frame->tick = ReadU32Le(&buf[3]);
-  frame->q_x10000[0] = ReadI16Le(&buf[7]);
-  frame->q_x10000[1] = ReadI16Le(&buf[9]);
-  frame->q_x10000[2] = ReadI16Le(&buf[11]);
-  frame->q_x10000[3] = ReadI16Le(&buf[13]);
-  frame->gyro_raw[0] = ReadI16Le(&buf[15]);
-  frame->gyro_raw[1] = ReadI16Le(&buf[17]);
-  frame->gyro_raw[2] = ReadI16Le(&buf[19]);
-  frame->heart_rate = ReadU16Le(&buf[21]);
+  frame->acc_mg[0] = ReadI16Le(&buf[7]);
+  frame->acc_mg[1] = ReadI16Le(&buf[9]);
+  frame->acc_mg[2] = ReadI16Le(&buf[11]);
+  frame->gyro_dps_x10[0] = ReadI16Le(&buf[13]);
+  frame->gyro_dps_x10[1] = ReadI16Le(&buf[15]);
+  frame->gyro_dps_x10[2] = ReadI16Le(&buf[17]);
+  frame->angle_x100[0] = ReadI16Le(&buf[19]);
+  frame->angle_x100[1] = ReadI16Le(&buf[21]);
+  frame->angle_x100[2] = ReadI16Le(&buf[23]);
+  frame->status = buf[25];
 }
 
 void WirelessLink_Init(void)

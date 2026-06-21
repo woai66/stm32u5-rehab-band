@@ -1,4 +1,4 @@
-﻿/* USER CODE BEGIN Header */
+/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * File Name          : app_freertos.c
@@ -25,29 +25,85 @@
 #include "lcd_touch_test.h"
 #include "lsm6dsr.h"
 #include "emg_sensor.h"
-#include "emg_rf_model.h"
 #include "imu_processing.h"
-#include "wireless_link.h"
+#include "rehab_eval.h"
 #include "usart.h"
+#include "wireless_link.h"
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef enum
+{
+  REHAB_ACTION_IDLE = 0,
+  REHAB_ACTION_ELBOW_FLEX,
+  REHAB_ACTION_ARM_ABDUCTION,
+  REHAB_ACTION_FOREARM_ROTATION,
+  REHAB_ACTION_SHOULDER_LIFT
+} RehabAction_t;
+
+typedef struct
+{
+  int16_t upper_acc_mg[3];
+  int16_t upper_gyro_x10[3];
+  int16_t upper_angle_x100[3];
+  int16_t wrist_acc_mg[3];
+  int16_t wrist_gyro_x10[3];
+  int16_t wrist_angle_x100[3];
+  int32_t elbow_relative_pitch_x100;
+  int32_t elbow_angle_x100;
+  int32_t forearm_rotation_angle_x100;
+  int32_t arm_abduction_angle_x100;
+  int32_t shoulder_lift_angle_x100;
+  int32_t elbow_velocity_x100_s;
+  int32_t elbow_range_x100;
+  int32_t emg_rms_x10;
+  uint8_t level;
+  uint8_t emg_active;
+  uint8_t valid;
+  RehabAction_t action;
+} RehabFrame_t;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define IMU_ATTITUDE_KP    (0.004f)
-#define IMU_ATTITUDE_KI    (0.00005f)
+#define IMU_ATTITUDE_KP    (1.0f)
+#define IMU_ATTITUDE_KI    (0.05f)
 #define IMU_ANGLE_DEADBAND_X10  (5)
 #define IMU_GYRO_DEADBAND_RAW  (2)
 #define DATA_STREAM_PERIOD_MS  (20U)
 #define EMG_UART4_RECORD_MODE  (1U)
-/* 采样任务里的陀螺仪日志会阻塞 200Hz 采样，默认关闭，仅排查时置 1 */
-#define SENSOR_GYRO_DEBUG_PRINT  (0U)
+#define UPPER_GYRO_DEBUG_PRINT  (0U)
+#define REHAB_ALGO_PERIOD_MS  (100U)
+#define REHAB_WINDOW_MS       (1000U)
+#define REHAB_ELBOW_RANGE_FLEX_X100       (2500)
+#define REHAB_ELBOW_VEL_FLEX_X100_S       (2500)
+#define REHAB_ELBOW_HOLD_ENTER_X100       (3000)
+#define REHAB_ELBOW_HOLD_EXIT_X100        (3000)
+#define REHAB_FOREARM_ROT_HOLD_ENTER_X100 (1500)
+#define REHAB_FOREARM_ROT_HOLD_EXIT_X100  (800)
+#define REHAB_FOREARM_ROT_STRONG_X100     (3000)
+#define REHAB_ARM_ABD_HOLD_ENTER_X100     (2000)
+#define REHAB_ARM_ABD_HOLD_EXIT_X100      (1800)
+#define REHAB_ARM_ABD_MIN_SHOULDER_X100   (2000)
+#define REHAB_ARM_ABD_MIN_SHOULDER_EXIT_X100 (1800)
+#define REHAB_SHOULDER_HOLD_ENTER_X100    (1800)
+#define REHAB_SHOULDER_HOLD_EXIT_X100     (1000)
+#define REHAB_ACTION_LATCH_MS             (1500U)
+#define REHAB_WRIST_ROT_GYRO_X10          (200)
+#define REHAB_FOREARM_UPPER_STABLE_GYRO_X10 (300)
+#define REHAB_FOREARM_UPPER_STABLE_ANGLE_X100 (2000)
+#define REHAB_ARM_ABDUCTION_GYRO_X10      (250)
+#define REHAB_SHOULDER_LIFT_GYRO_X10      (80)
+#define REHAB_ACTIVE_EVAL_ELBOW_FLEX      (1U)
+#define REHAB_ACTIVE_EVAL_FOREARM_ROT     (2U)
+#define REHAB_ACTIVE_EVAL_ARM_ABD         (3U)
+#define REHAB_ACTIVE_EVAL_SHOULDER_LIFT   (4U)
+#define REHAB_ACTIVE_EVAL                 REHAB_ACTIVE_EVAL_SHOULDER_LIFT
 /* 25% relative EMG amplitude is treated as full effort for the simple force estimate. */
 #define EMG_FORCE_FULL_SCALE_PERCENT_X10  (250U)
 
@@ -64,6 +120,10 @@
 static LSM6DSR_Data_t debug_imu_raw;
 static IMUProc_Euler_t debug_imu_euler;
 static uint8_t debug_imu_valid;
+static WirelessWristFrame_t latest_wrist_frame;
+static uint8_t latest_wrist_valid;
+static RehabFrame_t latest_rehab_frame;
+static uint8_t latest_rehab_valid;
 
 /* USART1 单字节中断接收缓冲，喂给腕端无线帧解析器 */
 static uint8_t wireless_rx_byte;
@@ -116,6 +176,256 @@ static void DebugUart_WriteBuffer(const char *buffer, int length)
   }
 
   (void)HAL_UART_Transmit(&huart4, (uint8_t *)buffer, (uint16_t)length, 100U);
+}
+
+static int32_t Rehab_AbsI32(int32_t value)
+{
+  return (value < 0) ? -value : value;
+}
+
+static int16_t Rehab_FloatToI16Scaled(float value, float scale)
+{
+  int32_t scaled = (int32_t)((value * scale) + ((value >= 0.0f) ? 0.5f : -0.5f));
+
+  if (scaled > INT16_MAX)
+  {
+    scaled = INT16_MAX;
+  }
+  if (scaled < INT16_MIN)
+  {
+    scaled = INT16_MIN;
+  }
+  return (int16_t)scaled;
+}
+
+static int16_t Rehab_AngleToSignedX100(float angle_deg)
+{
+  int32_t scaled;
+
+  while (angle_deg < -180.0f)
+  {
+    angle_deg += 360.0f;
+  }
+  while (angle_deg >= 180.0f)
+  {
+    angle_deg -= 360.0f;
+  }
+
+  scaled = (int32_t)((angle_deg * 100.0f) + ((angle_deg >= 0.0f) ? 0.5f : -0.5f));
+  if (scaled > INT16_MAX)
+  {
+    scaled = INT16_MAX;
+  }
+  if (scaled < INT16_MIN)
+  {
+    scaled = INT16_MIN;
+  }
+  return (int16_t)scaled;
+}
+
+static int32_t Rehab_AngleDiffAbsX100(int32_t a_x100, int32_t b_x100)
+{
+  int32_t diff = a_x100 - b_x100;
+
+  while (diff > 18000)
+  {
+    diff -= 36000;
+  }
+  while (diff < -18000)
+  {
+    diff += 36000;
+  }
+
+  return Rehab_AbsI32(diff);
+}
+
+static int32_t Rehab_AngleDiffSignedX100(int32_t a_x100, int32_t b_x100)
+{
+  int32_t diff = a_x100 - b_x100;
+
+  while (diff > 18000)
+  {
+    diff -= 36000;
+  }
+  while (diff < -18000)
+  {
+    diff += 36000;
+  }
+
+  return diff;
+}
+
+static char Rehab_SignCharI32(int32_t value)
+{
+  return (value < 0) ? '-' : '+';
+}
+
+static int32_t Rehab_ComputeElbowFlexionX100(int32_t upper_pitch_x100,
+                                             int32_t wrist_pitch_x100,
+                                             int32_t zero_relative_pitch_x100,
+                                             int32_t *relative_pitch_x100)
+{
+  int32_t relative;
+  int32_t flexion;
+
+  relative = Rehab_AngleDiffSignedX100(wrist_pitch_x100, upper_pitch_x100);
+  flexion = Rehab_AbsI32(Rehab_AngleDiffSignedX100(relative, zero_relative_pitch_x100));
+  if (flexion > 18000)
+  {
+    flexion = 18000;
+  }
+
+  if (relative_pitch_x100 != NULL)
+  {
+    *relative_pitch_x100 = relative;
+  }
+
+  return flexion;
+}
+
+static const char *Rehab_ActionName(RehabAction_t action)
+{
+  switch (action)
+  {
+    case REHAB_ACTION_ELBOW_FLEX:
+      return "ELBOW_FLEX";
+    case REHAB_ACTION_ARM_ABDUCTION:
+      return "ARM_ABD";
+    case REHAB_ACTION_FOREARM_ROTATION:
+      return "FOREARM_ROT";
+    case REHAB_ACTION_SHOULDER_LIFT:
+      return "SHOULDER_LIFT";
+    case REHAB_ACTION_IDLE:
+    default:
+      return "IDLE";
+  }
+}
+
+static RehabAction_t Rehab_ClassifyRule(const RehabFrame_t *frame, RehabAction_t previous_action)
+{
+  int32_t wrist_gx_abs;
+  int32_t upper_gy_abs;
+  int32_t upper_gz_abs;
+  uint8_t upper_stable_for_forearm;
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+  uint8_t forearm_motion_hint;
+#endif
+
+  if ((frame == NULL) || (frame->valid == 0U))
+  {
+    return REHAB_ACTION_IDLE;
+  }
+
+  wrist_gx_abs = Rehab_AbsI32(frame->wrist_gyro_x10[0]);
+  upper_gy_abs = Rehab_AbsI32(frame->upper_gyro_x10[1]);
+  upper_gz_abs = Rehab_AbsI32(frame->upper_gyro_x10[2]);
+  upper_stable_for_forearm =
+      ((upper_gy_abs < REHAB_FOREARM_UPPER_STABLE_GYRO_X10) &&
+       (upper_gz_abs < REHAB_FOREARM_UPPER_STABLE_GYRO_X10) &&
+       (frame->arm_abduction_angle_x100 < REHAB_FOREARM_UPPER_STABLE_ANGLE_X100) &&
+       (frame->shoulder_lift_angle_x100 < REHAB_FOREARM_UPPER_STABLE_ANGLE_X100)) ? 1U : 0U;
+
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+  forearm_motion_hint =
+      ((wrist_gx_abs >= REHAB_WRIST_ROT_GYRO_X10) ||
+       (frame->forearm_rotation_angle_x100 >= REHAB_FOREARM_ROT_HOLD_ENTER_X100) ||
+       ((previous_action == REHAB_ACTION_FOREARM_ROTATION) &&
+        (frame->forearm_rotation_angle_x100 >= REHAB_FOREARM_ROT_HOLD_EXIT_X100))) ? 1U : 0U;
+
+  if (frame->forearm_rotation_angle_x100 >= REHAB_FOREARM_ROT_STRONG_X100)
+  {
+    return REHAB_ACTION_FOREARM_ROTATION;
+  }
+
+  if ((forearm_motion_hint != 0U) && (upper_stable_for_forearm != 0U))
+  {
+    return REHAB_ACTION_FOREARM_ROTATION;
+  }
+
+  if (forearm_motion_hint == 0U)
+  {
+#endif
+  if ((frame->elbow_angle_x100 >= REHAB_ELBOW_HOLD_ENTER_X100) ||
+      ((previous_action == REHAB_ACTION_ELBOW_FLEX) &&
+       (frame->elbow_angle_x100 >= REHAB_ELBOW_HOLD_EXIT_X100)))
+  {
+    return REHAB_ACTION_ELBOW_FLEX;
+  }
+
+  if ((frame->elbow_range_x100 >= REHAB_ELBOW_RANGE_FLEX_X100) ||
+      (Rehab_AbsI32(frame->elbow_velocity_x100_s) >= REHAB_ELBOW_VEL_FLEX_X100_S))
+  {
+    return REHAB_ACTION_ELBOW_FLEX;
+  }
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+  }
+#endif
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_SHOULDER_LIFT)
+  if (upper_gy_abs >= REHAB_SHOULDER_LIFT_GYRO_X10)
+  {
+    return REHAB_ACTION_SHOULDER_LIFT;
+  }
+  if ((frame->shoulder_lift_angle_x100 >= REHAB_SHOULDER_HOLD_ENTER_X100) ||
+      ((previous_action == REHAB_ACTION_SHOULDER_LIFT) &&
+       (frame->shoulder_lift_angle_x100 >= REHAB_SHOULDER_HOLD_EXIT_X100)))
+  {
+    return REHAB_ACTION_SHOULDER_LIFT;
+  }
+#endif
+  if (upper_gz_abs >= REHAB_ARM_ABDUCTION_GYRO_X10)
+  {
+    return REHAB_ACTION_ARM_ABDUCTION;
+  }
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_ARM_ABD)
+  if ((frame->arm_abduction_angle_x100 >= REHAB_ARM_ABD_HOLD_ENTER_X100) ||
+      ((previous_action == REHAB_ACTION_ARM_ABDUCTION) &&
+       (frame->arm_abduction_angle_x100 >= REHAB_ARM_ABD_HOLD_EXIT_X100)))
+  {
+    return REHAB_ACTION_ARM_ABDUCTION;
+  }
+#else
+  if (((frame->arm_abduction_angle_x100 >= REHAB_ARM_ABD_HOLD_ENTER_X100) &&
+       (frame->shoulder_lift_angle_x100 >= REHAB_ARM_ABD_MIN_SHOULDER_X100)) ||
+      ((previous_action == REHAB_ACTION_ARM_ABDUCTION) &&
+       (frame->arm_abduction_angle_x100 >= REHAB_ARM_ABD_HOLD_EXIT_X100) &&
+       (frame->shoulder_lift_angle_x100 >= REHAB_ARM_ABD_MIN_SHOULDER_EXIT_X100)))
+  {
+    return REHAB_ACTION_ARM_ABDUCTION;
+  }
+#endif
+
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+  if (forearm_motion_hint == 0U)
+  {
+#endif
+    if (upper_gy_abs >= REHAB_SHOULDER_LIFT_GYRO_X10)
+    {
+      return REHAB_ACTION_SHOULDER_LIFT;
+    }
+    if ((frame->shoulder_lift_angle_x100 >= REHAB_SHOULDER_HOLD_ENTER_X100) ||
+        ((previous_action == REHAB_ACTION_SHOULDER_LIFT) &&
+         (frame->shoulder_lift_angle_x100 >= REHAB_SHOULDER_HOLD_EXIT_X100)))
+    {
+      return REHAB_ACTION_SHOULDER_LIFT;
+    }
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+  }
+#endif
+
+  if ((wrist_gx_abs >= REHAB_WRIST_ROT_GYRO_X10) &&
+      (upper_stable_for_forearm != 0U))
+  {
+    return REHAB_ACTION_FOREARM_ROTATION;
+  }
+  if ((upper_stable_for_forearm != 0U) &&
+      ((frame->forearm_rotation_angle_x100 >= REHAB_FOREARM_ROT_HOLD_ENTER_X100) ||
+       ((previous_action == REHAB_ACTION_FOREARM_ROTATION) &&
+        (frame->forearm_rotation_angle_x100 >= REHAB_FOREARM_ROT_HOLD_EXIT_X100))))
+  {
+    return REHAB_ACTION_FOREARM_ROTATION;
+  }
+
+  return REHAB_ACTION_IDLE;
 }
 
 /* USER CODE END 0 */
@@ -432,8 +742,7 @@ void StartSensorTask(void *argument)
       debug_imu_valid = 1U;
       taskEXIT_CRITICAL();
 
-#if SENSOR_GYRO_DEBUG_PRINT
-      if ((osKernelGetTickCount() - last_gyro_print_tick) >= 200U)
+      if ((UPPER_GYRO_DEBUG_PRINT != 0U) && ((osKernelGetTickCount() - last_gyro_print_tick) >= 200U))
       {
         last_gyro_print_tick = osKernelGetTickCount();
         printf("GYRO raw=%d,%d,%d dps_x10=%ld,%ld,%ld\r\n",
@@ -487,10 +796,479 @@ void StartSensorTask(void *argument)
 void StartAlgoTask(void *argument)
 {
   /* USER CODE BEGIN AlgoTask */
+  LSM6DSR_Data_t upper_raw;
+  IMUProc_Euler_t upper_euler;
+  WirelessWristFrame_t wrist_frame;
+  EmgSensor_Features_t emg_features;
+  RehabFrame_t rehab_frame;
+  uint8_t upper_valid;
+  uint8_t wrist_valid;
+  uint32_t now_tick;
+  uint32_t last_tick = 0U;
+  uint32_t window_start_tick = 0U;
+  uint32_t last_print_tick = 0U;
+  uint32_t last_train_print_tick = 0U;
+  int32_t last_elbow_angle_x100 = 0;
+  int32_t window_min_elbow_x100 = 0;
+  int32_t window_max_elbow_x100 = 0;
+  int32_t elbow_zero_relative_pitch_x100 = 0;
+  int32_t forearm_zero_roll_x100 = 0;
+  int32_t arm_abd_zero_yaw_x100 = 0;
+  int32_t shoulder_zero_pitch_x100 = 0;
+  uint8_t have_last_angle = 0U;
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+  uint8_t forearm_upper_stable = 0U;
+#endif
+  uint8_t window_initialized = 0U;
+  uint8_t elbow_zero_valid = 0U;
+  RehabAction_t previous_rule_action = REHAB_ACTION_IDLE;
+  RehabAction_t latched_action = REHAB_ACTION_IDLE;
+  RehabAction_t rule_action = REHAB_ACTION_IDLE;
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+  ForearmRotEvalConfig_t forearm_eval_config;
+  ForearmRotEvalSample_t forearm_eval_sample;
+  ForearmRotEvalState_t forearm_eval_state;
+#elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_ARM_ABD)
+  ArmAbdEvalConfig_t arm_abd_eval_config;
+  ArmAbdEvalSample_t arm_abd_eval_sample;
+  ArmAbdEvalState_t arm_abd_eval_state;
+#elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_SHOULDER_LIFT)
+  ShoulderLiftEvalConfig_t shoulder_lift_eval_config;
+  ShoulderLiftEvalSample_t shoulder_lift_eval_sample;
+  ShoulderLiftEvalState_t shoulder_lift_eval_state;
+#else
+  ElbowFlexEvalConfig_t elbow_eval_config;
+  ElbowFlexEvalSample_t elbow_eval_sample;
+  ElbowFlexEvalState_t elbow_eval_state;
+#endif
+  uint32_t latched_action_tick = 0U;
+
+  (void)argument;
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+  ForearmRotEval_Init();
+  ForearmRotEval_DefaultConfig(&forearm_eval_config);
+  ForearmRotEval_Start(&forearm_eval_config);
+  printf("TRAIN_START FOREARM_ROT target=%u\r\n",
+         (unsigned int)forearm_eval_config.target_reps);
+#elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_ARM_ABD)
+  ArmAbdEval_Init();
+  ArmAbdEval_DefaultConfig(&arm_abd_eval_config);
+  ArmAbdEval_Start(&arm_abd_eval_config);
+  printf("TRAIN_START ARM_ABD target=%u\r\n",
+         (unsigned int)arm_abd_eval_config.target_reps);
+#elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_SHOULDER_LIFT)
+  ShoulderLiftEval_Init();
+  ShoulderLiftEval_DefaultConfig(&shoulder_lift_eval_config);
+  ShoulderLiftEval_Start(&shoulder_lift_eval_config);
+  printf("TRAIN_START SHOULDER_LIFT target=%u\r\n",
+         (unsigned int)shoulder_lift_eval_config.target_reps);
+#else
+  ElbowFlexEval_Init();
+  ElbowFlexEval_DefaultConfig(&elbow_eval_config);
+  ElbowFlexEval_Start(&elbow_eval_config);
+  printf("TRAIN_START ELBOW_FLEX target=%u\r\n",
+         (unsigned int)elbow_eval_config.target_reps);
+#endif
+
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    taskENTER_CRITICAL();
+    upper_raw = debug_imu_raw;
+    upper_euler = debug_imu_euler;
+    upper_valid = debug_imu_valid;
+    wrist_frame = latest_wrist_frame;
+    wrist_valid = latest_wrist_valid;
+    taskEXIT_CRITICAL();
+
+    EmgSensor_GetFeatures(&emg_features);
+    now_tick = osKernelGetTickCount();
+
+    memset(&rehab_frame, 0, sizeof(rehab_frame));
+    rehab_frame.valid = ((upper_valid != 0U) &&
+                         (wrist_valid != 0U) &&
+                         ((wrist_frame.status & 0x01U) != 0U)) ? 1U : 0U;
+
+    if (rehab_frame.valid != 0U)
+    {
+      rehab_frame.upper_acc_mg[0] = Rehab_FloatToI16Scaled(upper_raw.acc_g_x, 1000.0f);
+      rehab_frame.upper_acc_mg[1] = Rehab_FloatToI16Scaled(upper_raw.acc_g_y, 1000.0f);
+      rehab_frame.upper_acc_mg[2] = Rehab_FloatToI16Scaled(upper_raw.acc_g_z, 1000.0f);
+      rehab_frame.upper_gyro_x10[0] = Rehab_FloatToI16Scaled(upper_raw.gyro_dps_x, 10.0f);
+      rehab_frame.upper_gyro_x10[1] = Rehab_FloatToI16Scaled(upper_raw.gyro_dps_y, 10.0f);
+      rehab_frame.upper_gyro_x10[2] = Rehab_FloatToI16Scaled(upper_raw.gyro_dps_z, 10.0f);
+      rehab_frame.upper_angle_x100[0] = Rehab_AngleToSignedX100(upper_euler.roll_deg);
+      rehab_frame.upper_angle_x100[1] = Rehab_AngleToSignedX100(upper_euler.pitch_deg);
+      rehab_frame.upper_angle_x100[2] = Rehab_AngleToSignedX100(upper_euler.yaw_deg);
+
+      for (uint8_t i = 0U; i < 3U; i++)
+      {
+        rehab_frame.wrist_acc_mg[i] = wrist_frame.acc_mg[i];
+        rehab_frame.wrist_gyro_x10[i] = wrist_frame.gyro_dps_x10[i];
+        rehab_frame.wrist_angle_x100[i] = wrist_frame.angle_x100[i];
+      }
+
+      if (elbow_zero_valid == 0U)
+      {
+        elbow_zero_relative_pitch_x100 =
+            Rehab_AngleDiffSignedX100(rehab_frame.wrist_angle_x100[1],
+                                      rehab_frame.upper_angle_x100[1]);
+        forearm_zero_roll_x100 = rehab_frame.wrist_angle_x100[0];
+        arm_abd_zero_yaw_x100 = rehab_frame.upper_angle_x100[2];
+        shoulder_zero_pitch_x100 = rehab_frame.upper_angle_x100[1];
+        elbow_zero_valid = 1U;
+        printf("REHAB posture zero calibrated elbow_rel=%ld.%02ld wrist_roll=%ld.%02ld upper_yaw=%ld.%02ld upper_pitch=%ld.%02ld deg\r\n",
+               (long)(elbow_zero_relative_pitch_x100 / 100),
+               (long)Rehab_AbsI32(elbow_zero_relative_pitch_x100 % 100),
+               (long)(forearm_zero_roll_x100 / 100),
+               (long)Rehab_AbsI32(forearm_zero_roll_x100 % 100),
+               (long)(arm_abd_zero_yaw_x100 / 100),
+               (long)Rehab_AbsI32(arm_abd_zero_yaw_x100 % 100),
+               (long)(shoulder_zero_pitch_x100 / 100),
+               (long)Rehab_AbsI32(shoulder_zero_pitch_x100 % 100));
+      }
+
+      rehab_frame.elbow_angle_x100 =
+          Rehab_ComputeElbowFlexionX100(rehab_frame.upper_angle_x100[1],
+                                        rehab_frame.wrist_angle_x100[1],
+                                        elbow_zero_relative_pitch_x100,
+                                        &rehab_frame.elbow_relative_pitch_x100);
+      rehab_frame.forearm_rotation_angle_x100 =
+          Rehab_AngleDiffAbsX100(rehab_frame.wrist_angle_x100[0], forearm_zero_roll_x100);
+      rehab_frame.arm_abduction_angle_x100 =
+          Rehab_AngleDiffAbsX100(rehab_frame.upper_angle_x100[2], arm_abd_zero_yaw_x100);
+      rehab_frame.shoulder_lift_angle_x100 =
+          Rehab_AngleDiffAbsX100(rehab_frame.upper_angle_x100[1], shoulder_zero_pitch_x100);
+
+      if ((have_last_angle != 0U) && (now_tick > last_tick))
+      {
+        rehab_frame.elbow_velocity_x100_s =
+            ((rehab_frame.elbow_angle_x100 - last_elbow_angle_x100) * 1000) /
+            (int32_t)(now_tick - last_tick);
+      }
+      else
+      {
+        rehab_frame.elbow_velocity_x100_s = 0;
+        have_last_angle = 1U;
+      }
+
+      last_elbow_angle_x100 = rehab_frame.elbow_angle_x100;
+      last_tick = now_tick;
+
+      if ((window_initialized == 0U) || ((now_tick - window_start_tick) >= REHAB_WINDOW_MS))
+      {
+        window_start_tick = now_tick;
+        window_min_elbow_x100 = rehab_frame.elbow_angle_x100;
+        window_max_elbow_x100 = rehab_frame.elbow_angle_x100;
+        window_initialized = 1U;
+      }
+      else
+      {
+        if (rehab_frame.elbow_angle_x100 < window_min_elbow_x100)
+        {
+          window_min_elbow_x100 = rehab_frame.elbow_angle_x100;
+        }
+        if (rehab_frame.elbow_angle_x100 > window_max_elbow_x100)
+        {
+          window_max_elbow_x100 = rehab_frame.elbow_angle_x100;
+        }
+      }
+
+      rehab_frame.elbow_range_x100 = window_max_elbow_x100 - window_min_elbow_x100;
+      rehab_frame.emg_rms_x10 = emg_features.rms_x10;
+      rehab_frame.emg_active = emg_features.active;
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+      forearm_upper_stable =
+          ((Rehab_AbsI32(rehab_frame.upper_gyro_x10[1]) < REHAB_FOREARM_UPPER_STABLE_GYRO_X10) &&
+           (Rehab_AbsI32(rehab_frame.upper_gyro_x10[2]) < REHAB_FOREARM_UPPER_STABLE_GYRO_X10) &&
+           (rehab_frame.arm_abduction_angle_x100 < REHAB_FOREARM_UPPER_STABLE_ANGLE_X100) &&
+           (rehab_frame.shoulder_lift_angle_x100 < REHAB_FOREARM_UPPER_STABLE_ANGLE_X100)) ? 1U : 0U;
+#endif
+      rule_action = Rehab_ClassifyRule(&rehab_frame, previous_rule_action);
+
+      if (rule_action != REHAB_ACTION_IDLE)
+      {
+        latched_action = rule_action;
+        latched_action_tick = now_tick;
+      }
+      else if ((latched_action != REHAB_ACTION_IDLE) &&
+               ((now_tick - latched_action_tick) <= REHAB_ACTION_LATCH_MS))
+      {
+        rule_action = latched_action;
+      }
+      else
+      {
+        latched_action = REHAB_ACTION_IDLE;
+      }
+      previous_rule_action = rule_action;
+
+      rehab_frame.action = rule_action;
+      rehab_frame.level = (rehab_frame.action != REHAB_ACTION_IDLE) ? 1U : 0U;
+
+      #if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+      forearm_eval_sample.rotation_angle_x100 = rehab_frame.forearm_rotation_angle_x100;
+      forearm_eval_sample.wrist_roll_gyro_x10 = rehab_frame.wrist_gyro_x10[0];
+      forearm_eval_sample.upper_stable =
+          ((forearm_upper_stable != 0U) ||
+           (rehab_frame.forearm_rotation_angle_x100 >= REHAB_FOREARM_ROT_STRONG_X100)) ? 1U : 0U;
+      forearm_eval_sample.valid = rehab_frame.valid;
+      forearm_eval_sample.tick_ms = now_tick;
+      ForearmRotEval_Update(&forearm_eval_sample);
+      ForearmRotEval_GetState(&forearm_eval_state);
+
+      if ((forearm_eval_state.just_completed_rep != 0U) ||
+          ((now_tick - last_train_print_tick) >= 500U))
+      {
+        last_train_print_tick = now_tick;
+        printf("TRAIN FOREARM_ROT rep=%u/%u upper_roll=%c%ld.%02ld wrist_roll=%c%ld.%02ld rot=%ld.%02ld gyro=%c%ld.%01ld max=%ld.%02ld score=%u stable=%u\r\n",
+               (unsigned int)forearm_eval_state.reps,
+               (unsigned int)forearm_eval_state.target_reps,
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[0]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[0]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[0]) % 100),
+               Rehab_SignCharI32(rehab_frame.wrist_angle_x100[0]),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_angle_x100[0]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_angle_x100[0]) % 100),
+               (long)(forearm_eval_state.current_angle_x100 / 100),
+               (long)Rehab_AbsI32(forearm_eval_state.current_angle_x100 % 100),
+               Rehab_SignCharI32(rehab_frame.wrist_gyro_x10[0]),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_gyro_x10[0]) / 10),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_gyro_x10[0]) % 10),
+               (long)(forearm_eval_state.max_angle_x100 / 100),
+               (long)Rehab_AbsI32(forearm_eval_state.max_angle_x100 % 100),
+               (unsigned int)forearm_eval_state.total_score,
+               (unsigned int)forearm_upper_stable);
+      }
+
+      if (forearm_eval_state.just_finished != 0U)
+      {
+        printf("RESULT FOREARM_ROT reps=%u max=%ld.%02ld avg=%ld.%02ld score=%u\r\n",
+               (unsigned int)forearm_eval_state.reps,
+               (long)(forearm_eval_state.max_angle_x100 / 100),
+               (long)Rehab_AbsI32(forearm_eval_state.max_angle_x100 % 100),
+               (long)(forearm_eval_state.avg_peak_angle_x100 / 100),
+               (long)Rehab_AbsI32(forearm_eval_state.avg_peak_angle_x100 % 100),
+               (unsigned int)forearm_eval_state.total_score);
+      }
+      #elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_ARM_ABD)
+      arm_abd_eval_sample.abduction_angle_x100 = rehab_frame.arm_abduction_angle_x100;
+      arm_abd_eval_sample.upper_yaw_gyro_x10 = rehab_frame.upper_gyro_x10[2];
+      arm_abd_eval_sample.valid = rehab_frame.valid;
+      arm_abd_eval_sample.tick_ms = now_tick;
+      ArmAbdEval_Update(&arm_abd_eval_sample);
+      ArmAbdEval_GetState(&arm_abd_eval_state);
+
+      if ((arm_abd_eval_state.just_completed_rep != 0U) ||
+          ((now_tick - last_train_print_tick) >= 500U))
+      {
+        last_train_print_tick = now_tick;
+        printf("TRAIN ARM_ABD rep=%u/%u abd=%ld.%02ld upper_yaw=%c%ld.%02ld upper_pitch=%c%ld.%02ld gyro_z=%c%ld.%01ld max=%ld.%02ld score=%u\r\n",
+               (unsigned int)arm_abd_eval_state.reps,
+               (unsigned int)arm_abd_eval_state.target_reps,
+               (long)(arm_abd_eval_state.current_angle_x100 / 100),
+               (long)Rehab_AbsI32(arm_abd_eval_state.current_angle_x100 % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[2]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[2]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[2]) % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[1]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) % 100),
+               Rehab_SignCharI32(rehab_frame.upper_gyro_x10[2]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_gyro_x10[2]) / 10),
+               (long)(Rehab_AbsI32(rehab_frame.upper_gyro_x10[2]) % 10),
+               (long)(arm_abd_eval_state.max_angle_x100 / 100),
+               (long)Rehab_AbsI32(arm_abd_eval_state.max_angle_x100 % 100),
+               (unsigned int)arm_abd_eval_state.total_score);
+      }
+
+      if (arm_abd_eval_state.just_finished != 0U)
+      {
+        printf("RESULT ARM_ABD reps=%u max=%ld.%02ld avg=%ld.%02ld score=%u\r\n",
+               (unsigned int)arm_abd_eval_state.reps,
+               (long)(arm_abd_eval_state.max_angle_x100 / 100),
+               (long)Rehab_AbsI32(arm_abd_eval_state.max_angle_x100 % 100),
+               (long)(arm_abd_eval_state.avg_peak_angle_x100 / 100),
+               (long)Rehab_AbsI32(arm_abd_eval_state.avg_peak_angle_x100 % 100),
+               (unsigned int)arm_abd_eval_state.total_score);
+      }
+      #elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_SHOULDER_LIFT)
+      shoulder_lift_eval_sample.lift_angle_x100 = rehab_frame.shoulder_lift_angle_x100;
+      shoulder_lift_eval_sample.upper_pitch_gyro_x10 = rehab_frame.upper_gyro_x10[1];
+      shoulder_lift_eval_sample.valid = rehab_frame.valid;
+      shoulder_lift_eval_sample.tick_ms = now_tick;
+      ShoulderLiftEval_Update(&shoulder_lift_eval_sample);
+      ShoulderLiftEval_GetState(&shoulder_lift_eval_state);
+
+      if ((shoulder_lift_eval_state.just_completed_rep != 0U) ||
+          ((now_tick - last_train_print_tick) >= 500U))
+      {
+        last_train_print_tick = now_tick;
+        printf("TRAIN SHOULDER_LIFT rep=%u/%u lift=%ld.%02ld upper_pitch=%c%ld.%02ld upper_yaw=%c%ld.%02ld gyro_y=%c%ld.%01ld max=%ld.%02ld score=%u\r\n",
+               (unsigned int)shoulder_lift_eval_state.reps,
+               (unsigned int)shoulder_lift_eval_state.target_reps,
+               (long)(shoulder_lift_eval_state.current_angle_x100 / 100),
+               (long)Rehab_AbsI32(shoulder_lift_eval_state.current_angle_x100 % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[1]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[2]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[2]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[2]) % 100),
+               Rehab_SignCharI32(rehab_frame.upper_gyro_x10[1]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_gyro_x10[1]) / 10),
+               (long)(Rehab_AbsI32(rehab_frame.upper_gyro_x10[1]) % 10),
+               (long)(shoulder_lift_eval_state.max_angle_x100 / 100),
+               (long)Rehab_AbsI32(shoulder_lift_eval_state.max_angle_x100 % 100),
+               (unsigned int)shoulder_lift_eval_state.total_score);
+      }
+
+      if (shoulder_lift_eval_state.just_finished != 0U)
+      {
+        printf("RESULT SHOULDER_LIFT reps=%u max=%ld.%02ld avg=%ld.%02ld score=%u\r\n",
+               (unsigned int)shoulder_lift_eval_state.reps,
+               (long)(shoulder_lift_eval_state.max_angle_x100 / 100),
+               (long)Rehab_AbsI32(shoulder_lift_eval_state.max_angle_x100 % 100),
+               (long)(shoulder_lift_eval_state.avg_peak_angle_x100 / 100),
+               (long)Rehab_AbsI32(shoulder_lift_eval_state.avg_peak_angle_x100 % 100),
+               (unsigned int)shoulder_lift_eval_state.total_score);
+      }
+      #else
+      elbow_eval_sample.flex_angle_x100 = rehab_frame.elbow_angle_x100;
+      elbow_eval_sample.emg_active = rehab_frame.emg_active;
+      elbow_eval_sample.valid = rehab_frame.valid;
+      elbow_eval_sample.tick_ms = now_tick;
+      ElbowFlexEval_Update(&elbow_eval_sample);
+      ElbowFlexEval_GetState(&elbow_eval_state);
+
+      if ((elbow_eval_state.just_completed_rep != 0U) ||
+          ((now_tick - last_train_print_tick) >= 500U))
+      {
+        last_train_print_tick = now_tick;
+        printf("TRAIN ELBOW_FLEX rep=%u/%u flex=%ld.%02ld upper_pitch=%c%ld.%02ld wrist_pitch=%c%ld.%02ld max=%ld.%02ld score=%u emg=%u%%\r\n",
+               (unsigned int)elbow_eval_state.reps,
+               (unsigned int)elbow_eval_state.target_reps,
+               (long)(elbow_eval_state.current_angle_x100 / 100),
+               (long)Rehab_AbsI32(elbow_eval_state.current_angle_x100 % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[1]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) % 100),
+               Rehab_SignCharI32(rehab_frame.wrist_angle_x100[1]),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_angle_x100[1]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_angle_x100[1]) % 100),
+               (long)(elbow_eval_state.max_angle_x100 / 100),
+               (long)Rehab_AbsI32(elbow_eval_state.max_angle_x100 % 100),
+               (unsigned int)elbow_eval_state.total_score,
+               (unsigned int)elbow_eval_state.emg_rate);
+      }
+
+      if (elbow_eval_state.just_finished != 0U)
+      {
+        printf("RESULT ELBOW_FLEX reps=%u max=%ld.%02ld avg=%ld.%02ld score=%u emg=%u%%\r\n",
+               (unsigned int)elbow_eval_state.reps,
+               (long)(elbow_eval_state.max_angle_x100 / 100),
+               (long)Rehab_AbsI32(elbow_eval_state.max_angle_x100 % 100),
+               (long)(elbow_eval_state.avg_peak_angle_x100 / 100),
+               (long)Rehab_AbsI32(elbow_eval_state.avg_peak_angle_x100 % 100),
+               (unsigned int)elbow_eval_state.total_score,
+               (unsigned int)elbow_eval_state.emg_rate);
+      }
+      #endif
+
+      taskENTER_CRITICAL();
+      latest_rehab_frame = rehab_frame;
+      latest_rehab_valid = 1U;
+      taskEXIT_CRITICAL();
+    }
+    else
+    {
+      have_last_angle = 0U;
+      previous_rule_action = REHAB_ACTION_IDLE;
+      latched_action = REHAB_ACTION_IDLE;
+      rule_action = REHAB_ACTION_IDLE;
+      #if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+      memset(&forearm_eval_sample, 0, sizeof(forearm_eval_sample));
+      forearm_eval_sample.tick_ms = now_tick;
+      ForearmRotEval_Update(&forearm_eval_sample);
+      #elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_ARM_ABD)
+      memset(&arm_abd_eval_sample, 0, sizeof(arm_abd_eval_sample));
+      arm_abd_eval_sample.tick_ms = now_tick;
+      ArmAbdEval_Update(&arm_abd_eval_sample);
+      #elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_SHOULDER_LIFT)
+      memset(&shoulder_lift_eval_sample, 0, sizeof(shoulder_lift_eval_sample));
+      shoulder_lift_eval_sample.tick_ms = now_tick;
+      ShoulderLiftEval_Update(&shoulder_lift_eval_sample);
+      #else
+      memset(&elbow_eval_sample, 0, sizeof(elbow_eval_sample));
+      elbow_eval_sample.tick_ms = now_tick;
+      ElbowFlexEval_Update(&elbow_eval_sample);
+      #endif
+    }
+
+    if ((now_tick - last_print_tick) >= 200U)
+    {
+      last_print_tick = now_tick;
+      if (rehab_frame.valid != 0U)
+      {
+#if (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_FOREARM_ROT)
+        printf("REHAB action=%s rot=%ld.%02ld upper_roll=%c%ld.%02ld wrist_roll=%c%ld.%02ld emg=%u\r\n",
+               Rehab_ActionName(rehab_frame.action),
+               (long)(rehab_frame.forearm_rotation_angle_x100 / 100),
+               (long)Rehab_AbsI32(rehab_frame.forearm_rotation_angle_x100 % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[0]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[0]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[0]) % 100),
+               Rehab_SignCharI32(rehab_frame.wrist_angle_x100[0]),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_angle_x100[0]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_angle_x100[0]) % 100),
+               (unsigned int)rehab_frame.emg_active);
+#elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_ARM_ABD)
+        printf("REHAB action=%s abd=%ld.%02ld upper_yaw=%c%ld.%02ld upper_pitch=%c%ld.%02ld emg=%u\r\n",
+               Rehab_ActionName(rehab_frame.action),
+               (long)(rehab_frame.arm_abduction_angle_x100 / 100),
+               (long)Rehab_AbsI32(rehab_frame.arm_abduction_angle_x100 % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[2]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[2]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[2]) % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[1]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) % 100),
+               (unsigned int)rehab_frame.emg_active);
+#elif (REHAB_ACTIVE_EVAL == REHAB_ACTIVE_EVAL_SHOULDER_LIFT)
+        printf("REHAB action=%s lift=%ld.%02ld upper_pitch=%c%ld.%02ld upper_yaw=%c%ld.%02ld emg=%u\r\n",
+               Rehab_ActionName(rehab_frame.action),
+               (long)(rehab_frame.shoulder_lift_angle_x100 / 100),
+               (long)Rehab_AbsI32(rehab_frame.shoulder_lift_angle_x100 % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[1]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[1]) % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[2]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[2]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[2]) % 100),
+               (unsigned int)rehab_frame.emg_active);
+#else
+        printf("REHAB action=%s flex=%ld.%02ld upper_roll=%c%ld.%02ld wrist_roll=%c%ld.%02ld emg=%u\r\n",
+               Rehab_ActionName(rehab_frame.action),
+               (long)(rehab_frame.elbow_angle_x100 / 100),
+               (long)Rehab_AbsI32(rehab_frame.elbow_angle_x100 % 100),
+               Rehab_SignCharI32(rehab_frame.upper_angle_x100[0]),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[0]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.upper_angle_x100[0]) % 100),
+               Rehab_SignCharI32(rehab_frame.wrist_angle_x100[0]),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_angle_x100[0]) / 100),
+               (long)(Rehab_AbsI32(rehab_frame.wrist_angle_x100[0]) % 100),
+               (unsigned int)rehab_frame.emg_active);
+#endif
+      }
+      else
+      {
+        printf("REHAB waiting upper=%u wrist=%u wrist_status=0x%02X\r\n",
+               (unsigned int)upper_valid,
+               (unsigned int)wrist_valid,
+               (unsigned int)wrist_frame.status);
+      }
+    }
+
+    osDelay(REHAB_ALGO_PERIOD_MS);
   }
   /* USER CODE END AlgoTask */
 }
@@ -506,13 +1284,6 @@ void StartAlgoTask(void *argument)
 void StartEmgTask(void *argument)
 {
   /* USER CODE BEGIN EmgTask */
-  EmgSensor_Features_t emg_features;
-  EmgModelInput_t model_input;
-  EmgAction_t emg_action;
-  uint16_t confidence_x1000 = 0U;
-  uint8_t flex_level = 0U;
-  uint8_t force_percent = 0U;
-  uint32_t last_print_tick = 0U;
 
   // EMG 纭欢鍚姩鍒濆鍖?
   if (EmgSensor_Start() != HAL_OK)
@@ -539,71 +1310,6 @@ void StartEmgTask(void *argument)
     {
       EmgSensor_ProcessFullBuffer();
     }
-    // 200ms 鍛ㄦ湡鐘舵€佹墦鍗帮紙璋冭瘯鐢級
-//    if ((osKernelGetTickCount() - last_print_tick) >= 200U)
-//    {
-//      last_print_tick = osKernelGetTickCount();
-//      EmgSensor_GetFeatures(&emg_features);
-//      model_input.raw = emg_features.raw;
-//      model_input.baseline_x10 = emg_features.baseline_x10;
-//      model_input.drop_x10 = emg_features.drop_x10;
-//      model_input.rectified_x10 = emg_features.rectified_x10;
-//      model_input.envelope_x10 = emg_features.envelope_x10;
-//      model_input.rms_x10 = emg_features.rms_x10;
-
-//      osMutexAcquire(uart2MutexHandle, osWaitForever);
-//      if (EMG_UART4_RECORD_MODE != 0U)
-//      {
-//        if (emg_features.calibrated == 0U)
-//        {
-//          printf("EMGPRED cal=0 raw=%u base_x10=%ld\r\n",
-//                 (unsigned int)emg_features.raw,
-//                 (long)emg_features.baseline_x10);
-//        }
-//        else
-//        {
-//          emg_action = EmgRfModel_Predict(&model_input, &confidence_x1000);
-//          force_percent = Emg_EstimateForcePercent(&emg_features);
-//          flex_level = 0U;
-//          if (emg_action == EMG_ACTION_ARM_FLEX_LIGHT)
-//          {
-//            flex_level = 1U;
-//          }
-//          else if (emg_action == EMG_ACTION_ARM_FLEX_STRONG)
-//          {
-//            flex_level = 2U;
-//          }
-
-//          printf("EMGPRED action=%s force=%u raw=%u drop_x10=%ld env_x10=%ld rms_x10=%ld\r\n",
-//                 EmgRfModel_LabelName(emg_action),
-//                 (unsigned int)force_percent,
-//                 (unsigned int)emg_features.raw,
-//                 (long)emg_features.drop_x10,
-//                 (long)emg_features.envelope_x10,
-//                 (long)emg_features.rms_x10);
-//        }
-//      }
-//      else
-//      {
-//        emg_action = EmgRfModel_Predict(&model_input, &confidence_x1000);
-//        force_percent = Emg_EstimateForcePercent(&emg_features);
-//        printf("EMGDBGv4 raw=%u base_x10=%ld drop_x10=%ld rect_x10=%ld env_x10=%ld rms_x10=%ld strength=%u force=%u cal=%u action=%s conf=%u feature_size=%u\r\n",
-//               (unsigned int)emg_features.raw,
-//               (long)emg_features.baseline_x10,
-//               (long)emg_features.drop_x10,
-//               (long)emg_features.rectified_x10,
-//               (long)emg_features.envelope_x10,
-//               (long)emg_features.rms_x10,
-//               (unsigned int)emg_features.strength,
-//               (unsigned int)force_percent,
-//               (unsigned int)emg_features.calibrated,
-//               EmgRfModel_LabelName(emg_action),
-//               (unsigned int)confidence_x1000,
-//               (unsigned int)sizeof(EmgSensor_Features_t));
-//      }
-//      osMutexRelease(uart2MutexHandle);
-//    }
-
     osDelay(1);
   }
   /* USER CODE END EmgTask */
@@ -616,26 +1322,97 @@ void StartEmgTask(void *argument)
 * @retval None
 */
 /* USER CODE END Header_StartWirelessTask */
-//  杞鎺ユ敹鏃犵嚎鎵嬭厱绔笅鍙戠殑涓插彛甯?
+// Poll USART1 bytes from the HC-05 module and parse wrist-node frames.
 void StartWirelessTask(void *argument)
 {
   /* USER CODE BEGIN WirelessTask */
+  uint8_t rx_byte;
+  WirelessWristFrame_t wrist_frame;
+  WirelessLinkStats_t stats;
+  uint8_t raw_sample[16];
+  uint32_t last_debug_tick = 0U;
+  uint32_t last_frame_tick = 0U;
+  uint32_t raw_rx_count = 0U;
+  uint32_t last_raw_rx_count = 0U;
+  uint8_t raw_sample_count = 0U;
+  uint8_t has_frame = 0U;
+
   (void)argument;
 
   WirelessLink_Init();
-  /* 开启 USART1 单字节中断接收，字节在 HAL_UART_RxCpltCallback 中喂给解析器 */
-  (void)HAL_UART_Receive_IT(&huart1, &wireless_rx_byte, 1U);
-  printf("Wrist link RX on USART1, baud=115200\r\n");
+  printf("HC05 USART1 RX task start, baud=9600\r\n");
 
   /* Infinite loop */
   for(;;)
   {
-    /* 接收在中断中完成，这里定期自愈：若接收被错误中断则重新挂起接收 */
-    if (HAL_UART_GetState(&huart1) == HAL_UART_STATE_READY)
+    osMutexAcquire(uart1MutexHandle, osWaitForever);
+    if (HAL_UART_Receive(&huart1, &rx_byte, 1U, 20U) == HAL_OK)
     {
-      (void)HAL_UART_Receive_IT(&huart1, &wireless_rx_byte, 1U);
+      osMutexRelease(uart1MutexHandle);
+      raw_rx_count++;
+      if (raw_sample_count < sizeof(raw_sample))
+      {
+        raw_sample[raw_sample_count++] = rx_byte;
+      }
+
+      if (WirelessLink_PushByte(rx_byte, &wrist_frame) != 0U)
+      {
+        taskENTER_CRITICAL();
+        latest_wrist_frame = wrist_frame;
+        latest_wrist_valid = 1U;
+        taskEXIT_CRITICAL();
+
+        has_frame = 1U;
+        last_frame_tick = osKernelGetTickCount();
+      }
     }
-    osDelay(100);
+    else
+    {
+      osMutexRelease(uart1MutexHandle);
+    }
+
+    if ((osKernelGetTickCount() - last_debug_tick) >= 1000U)
+    {
+      last_debug_tick = osKernelGetTickCount();
+      WirelessLink_GetStats(&stats);
+
+      if (has_frame != 0U)
+      {
+        printf("HC05_RX ok=%lu err=%lu seq=%u status=0x%02X acc_mg=%d,%d,%d gyro_x10=%d,%d,%d angle_x100=%d,%d,%d age=%lu\r\n",
+               (unsigned long)stats.frames_ok,
+               (unsigned long)stats.checksum_errors,
+               (unsigned int)wrist_frame.seq,
+               (unsigned int)wrist_frame.status,
+               (int)wrist_frame.acc_mg[0],
+               (int)wrist_frame.acc_mg[1],
+               (int)wrist_frame.acc_mg[2],
+               (int)wrist_frame.gyro_dps_x10[0],
+               (int)wrist_frame.gyro_dps_x10[1],
+               (int)wrist_frame.gyro_dps_x10[2],
+               (int)wrist_frame.angle_x100[0],
+               (int)wrist_frame.angle_x100[1],
+               (int)wrist_frame.angle_x100[2],
+               (unsigned long)(osKernelGetTickCount() - last_frame_tick));
+      }
+      else
+      {
+        printf("HC05_RX waiting bytes=%lu delta=%lu resync=%lu err=%lu raw:",
+               (unsigned long)raw_rx_count,
+               (unsigned long)(raw_rx_count - last_raw_rx_count),
+               (unsigned long)stats.resync_count,
+               (unsigned long)stats.checksum_errors);
+        for (uint8_t i = 0U; i < raw_sample_count; i++)
+        {
+          printf(" %02X", (unsigned int)raw_sample[i]);
+        }
+        printf("\r\n");
+      }
+
+      last_raw_rx_count = raw_rx_count;
+      raw_sample_count = 0U;
+    }
+
+    osDelay(1);
   }
   /* USER CODE END WirelessTask */
 }

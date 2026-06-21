@@ -430,6 +430,21 @@
               <FilePath>../Core/Src/emg_rf_model.c</FilePath>
             </File>
             <File>
+              <FileName>rehab_model.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/rehab_model.c</FilePath>
+            </File>
+            <File>
+              <FileName>rehab_training.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/rehab_training.c</FilePath>
+            </File>
+            <File>
+              <FileName>rehab_eval.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/rehab_eval.c</FilePath>
+            </File>
+            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/main.c</FilePath>
